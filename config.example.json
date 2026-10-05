@@ -1,0 +1,22 @@
+{
+  "input_dir": ".",
+  "output_dir": "outputs",
+  "state_dir": "var",
+  "secrets_file": ".env",
+  "sender_name": "Resumo dos cartões",
+  "owner_name": null,
+  "recipients": [
+    {"sheet": "Luiz", "participant": "Luiz", "email": null},
+    {"sheet": "Guilherme", "participant": "Guilherme", "email": null},
+    {"sheet": "Jhenyfer", "participant": "Jhenyfer", "email": null},
+    {"sheet": "Dora", "participant": "Dora/Cae", "email": null},
+    {"sheet": "Gi", "participant": "Gi", "email": null},
+    {"sheet": "Iago", "participant": "Iago", "email": null},
+    {"sheet": "Fernando", "participant": "Fernando", "email": null},
+    {"sheet": "Isa", "participant": "Isa", "email": null},
+    {"sheet": "Eli", "participant": "Eli", "email": null},
+    {"sheet": "PNC", "participant": "PNC", "email": null},
+    {"sheet": "Biazi", "participant": "Biazi", "email": null},
+    {"sheet": "Luana", "participant": "Luana", "email": null}
+  ]
+}

@@ -22,10 +22,10 @@ Automations/
         ├── pyproject.toml
         ├── cartoes.py
         ├── config.example.json
-        ├── .env.example
+        ├── .env.example  # nota de migração; não copiar para .env
         ├── hermes/
         ├── tests/
-        ├── inputs/       # planilhas mensais
+        ├── inputs/       # arquivos opcionais no modo local
         ├── outputs/      # prévias HTML e texto
         └── var/          # histórico e trava; criado durante o uso
 ```
@@ -41,12 +41,16 @@ A partir da raiz:
 cd automations/cartoes
 python3 -m venv .venv
 .venv/bin/python -m pip install .
-.venv/bin/python cartoes.py --config config.example.json --card black --month 2026-09
-.venv/bin/python cartoes.py --config config.example.json --card latam --month 2026-09
+cp config.example.json config.json
+# configure owner_name, recipients, personal_copy_email and payment_footer in config.json
+.venv/bin/python cartoes.py --config config.json --card black --month 2026-09
+.venv/bin/python cartoes.py --config config.json --card latam --month 2026-09
 ```
 
-Coloque o arquivo `2026-09.xlsx` em `automations/cartoes/inputs/` antes dessas
-prévias. Para configurar destinatários, Gmail e agendamentos, siga o
+Por padrão, a planilha deve estar no Google Drive em
+`Meu Drive/Cartão/2026/2026-09.xlsx`; o ano e o nome esperado acompanham o mês
+solicitado. Para desenvolvimento local, configure `input_source: "local"` e
+`input_dir`. Para configurar contatos, Gmail e agendamentos, siga o
 [guia dos cartões](automations/cartoes/README.md). A planilha pessoal não acompanha
 um clone do repositório.
 

@@ -15,7 +15,7 @@ Quando não houver pagamentos, o resumo exibe **PAGAMENTOS: R$ 0,00**.
 | Cartão | Execução, horário de Brasília | Arquivo usado em outubro |
 | --- | --- | --- |
 | Black | Dia 5, às 09h | `2026-09.xlsx` |
-| Latam | Dia 20, às 09h | `2026-09.xlsx` |
+| Latam | Dia 20, às 09h | `2026-10.xlsx` |
 
 É necessário Python **3.11 ou superior**, em Linux ou macOS. Os valores são lidos
 diretamente das colunas dos participantes nas abas `Black` e `Latam`; o script não
@@ -23,72 +23,78 @@ precisa abrir o Excel nem recalcular `FILTER`. A planilha original não é alter
 
 ### 1. Preparar o projeto
 
-No servidor, coloque o repositório em `~/Automations`. Prepare um ambiente
+No servidor, use o repositório em `~/Projetos/Automations`. Prepare um ambiente
 Python exclusivo desta automação:
 
 ```bash
-cd ~/Automations/automations/cartoes
+cd ~/Projetos/Automations/automations/cartoes
 python3 -m venv .venv
 .venv/bin/python -m pip install .
 cp config.example.json config.json
-cp .env.example .env
-chmod 600 .env
 ```
 
 Edite `config.json`:
 
-- `input_dir`: pasta em que você copiará os arquivos `AAAA-MM.xlsx`; o exemplo
-  usa `inputs`, dentro da pasta desta automação.
+- `input_source`: `drive` (padrão) busca em `Meu Drive/<drive_folder_name>/<ano>/<AAAA-MM>.xlsx`;
+  `local` habilita a pasta `input_dir` apenas como alternativa local.
+- `drive_folder_name`: nome exato da pasta na raiz de `Meu Drive`; o padrão é `Cartão`.
+- `input_dir`: pasta local usada somente quando `input_source` for `local`.
 - `output_dir`: pasta das prévias HTML e texto.
 - `state_dir`: pasta do histórico SQLite e da trava de execução.
-- `secrets_file`: caminho do arquivo de credenciais.
-- `sender_name`: nome exibido como remetente.
+- `google_token_file` (opcional): caminho do token OAuth do Hermes. Por padrão,
+  usa `$HERMES_HOME/google_token.json` ou `~/.hermes/google_token.json`.
+- `sender_name`: nome exibido como remetente; o padrão neutro é `Hermes`. Defina
+  o nome desejado apenas no `config.json` privado.
 - `owner_name`: seu nome, usado na apresentação “Sou o Hermes, assistente pessoal
-  de…”. Preencha esse campo antes de enviar. Enquanto estiver `null`, as prévias
+  do…”. Preencha esse campo antes de enviar. Enquanto estiver `null`, as prévias
   mostram `[seu nome]` e o envio é bloqueado.
+- `payment_footer` (opcional): texto de uma linha anexado ao fim dos corpos HTML e
+  texto. Cadastre dados de pagamento somente no `config.json` privado; no exemplo
+  versionado, este campo fica `null`.
+- `personal_copy_email`: endereço pessoal incluído em `Cc` em cada resumo; preencha
+  antes de enviar. Os avisos também usam esse `Cc` quando o endereço está configurado.
 - `recipients`: associação entre `sheet` (aba pessoal), `participant` (cabeçalho
   da coluna na linha 2 do cartão) e `email`. Preencha os `null` com os endereços.
   Para excluir explicitamente alguém dos envios, acrescente `"enabled": false`.
 
 Os caminhos relativos são resolvidos a partir da pasta de `config.json`, não da
-pasta corrente do Hermes. O cadastro inicial corresponde às 12 abas do exemplo,
-incluindo `Dora` associada a `Dora/Cae`. Colunas de pessoas sem aba pessoal não
-produzem e-mails. Ao adicionar, remover ou renomear abas pessoais, atualize o
-cadastro; abas desconhecidas ou ausentes interrompem a execução.
+pasta corrente do Hermes. O exemplo contém 12 destinatários fictícios
+(`Pessoa01`–`Pessoa12`). Substitua os campos `sheet` e `participant` pelos nomes
+exatos da aba pessoal e do cabeçalho na planilha. Atualize o cadastro se adicionar,
+remover ou renomear abas; abas desconhecidas ou ausentes interrompem a execução.
 
-Edite `.env`, sem enviar os valores pela conversa:
+A autenticação da planilha reutiliza o mesmo token OAuth do Hermes, que precisa ter
+acesso de leitura ao Drive, além dos escopos `gmail.send` e `gmail.readonly` para
+os e-mails. O endereço remetente e o destino dos avisos são obtidos do perfil Gmail.
 
-```dotenv
-GMAIL_USER=seu.endereco@gmail.com
-GMAIL_APP_PASSWORD=senha_de_app_de_16_letras
-```
+Com `input_source: "drive"`, a busca é exata: `Meu Drive/Cartão/<ano>/<AAAA-MM>.xlsx`,
+onde o ano vem do mês solicitado. Se pasta ou arquivo não for encontrado, a execução
+falha com aviso; não cai silenciosamente para `inputs/`. Para usar uma pasta local,
+defina explicitamente `input_source: "local"` e `input_dir`.
 
-`GMAIL_USER` deve ser a sua conta: ela envia os resumos e recebe, sozinha, os
-avisos de erro da automação. O cadastro dos amigos nunca é usado para esses avisos.
-
-Use uma **senha de app** da conta Google, que exige verificação em duas etapas e
-disponibilidade dessa opção na conta. Não use a senha comum do Gmail.
-[Instruções oficiais do Google](https://support.google.com/mail/answer/185833?hl=pt-BR).
-O script aceita a senha de app com os espaços exibidos pelo Google. Conecta-se a
-`smtp.gmail.com:465` com TLS e validação do certificado. Também aceita as duas
-credenciais em variáveis de ambiente; elas têm precedência sobre o arquivo.
-
-O `.env` é carregado explicitamente pelo script, pois um serviço do Hermes pode
-não herdar as variáveis do seu terminal. `config.json`, `.env`, planilhas,
-histórico e prévias estão excluídos do Git.
+O processo que executa a automação deve rodar com o mesmo usuário Linux que tem
+acesso a `~/.hermes/google_token.json`. Se o token estiver em outro local, defina
+`google_token_file` em `config.json`. A automação não lê nem altera um `.env` antigo;
+`config.json`, `.env`, planilhas, histórico e prévias continuam excluídos do Git.
 
 ### 2. Gerar as prévias
 
-Copie a planilha salva para `inputs/` (ou a pasta definida em `input_dir`). O nome deve ser exatamente
-`AAAA-MM.xlsx`; não há seleção automática do arquivo mais recente.
+Com `input_source: "drive"` (padrão), salve o arquivo no Google Drive em
+`Meu Drive/Cartão/<ano>/<AAAA-MM>.xlsx`. Por exemplo, `2026-09.xlsx` fica em
+`Meu Drive/Cartão/2026/`. O script seleciona o mês informado ou calculado pelo
+agendamento; não usa o arquivo mais recente por nome ou data. A pasta `inputs/` só é
+usada se você configurar explicitamente `input_source` como `local`.
 
 ```bash
 .venv/bin/python cartoes.py --config config.json --card black --month 2026-09
 .venv/bin/python cartoes.py --config config.json --card latam --month 2026-09
 ```
 
-Sem `--send`, o script **somente gera prévias**. Você pode usar
-`--config config.example.json` antes de preencher os destinatários. Abra:
+Sem `--send`, o script **somente gera prévias**. Para a sua planilha, copie
+`config.example.json` para `config.json` e substitua os nomes fictícios em `sheet`
+e `participant` pelos rótulos exatos da planilha; os e-mails podem ficar `null`
+para gerar prévias. O arquivo de exemplo só corresponde a planilhas com esses
+placeholders. Abra:
 
 - `outputs/2026-09/black/index.html`
 - `outputs/2026-09/latam/index.html`
@@ -121,13 +127,17 @@ o lote; resultados em cache não são usados como substituto. Espera-se uma linh
 Depois de configurar o Gmail, envie inicialmente **um resumo apenas para você**:
 
 ```bash
-.venv/bin/python cartoes.py --config config.json --card latam --month 2026-09 --recipient Iago --send --test-to seu.endereco@gmail.com
+.venv/bin/python cartoes.py --config config.json --card latam --month 2026-09 --recipient NOME_DA_ABA --send --test-to seu.endereco@gmail.com
 ```
 
-`--test-to` troca o destinatário pelo endereço informado, acrescenta `[TESTE]` ao
-assunto e não registra um envio de produção. Sem `--recipient`, todos os resumos
-daquele cartão serão redirecionados a você. Confira o e-mail no Gmail do
-computador e do celular, incluindo as cinco colunas e os valores de rateio.
+Troque `NOME_DA_ABA` pelo valor exato de `sheet` no `config.json` e o endereço
+ilustrativo pelo destinatário de teste.
+
+`--test-to` troca o destinatário em `To` pelo endereço informado, acrescenta `[TESTE]`
+ao assunto e não registra um envio de produção. A cópia `personal_copy_email` continua
+em `Cc` e fica visível ao destinatário do teste; se for o mesmo endereço de `To`, não
+é repetida. Sem `--recipient`, todos os resumos daquele cartão vão ao endereço de teste.
+Confira o e-mail no Gmail do computador e do celular, incluindo as cinco colunas e os valores de rateio.
 
 Para enviar aos amigos:
 
@@ -137,8 +147,9 @@ Para enviar aos amigos:
 ```
 
 Um e-mail ausente ou inválido em qualquer resumo do lote impede os envios antes
-da conexão SMTP. Cada mensagem tem um único destinatário, sem CC ou BCC. Não há
-anexo com a planilha inteira nem conteúdo de outros amigos.
+da conexão à API do Gmail. Cada resumo vai para um único destinatário em `To` e
+leva `personal_copy_email` em `Cc` (visível aos destinatários), sem Bcc. Não há anexo
+com a planilha inteira nem conteúdo de outros amigos.
 
 ### 4. Agendar no Hermes
 
@@ -156,17 +167,17 @@ cp hermes/cartao_black.py ~/.hermes/scripts/cartao_black.py
 cp hermes/cartao_latam.py ~/.hermes/scripts/cartao_latam.py
 ```
 
-Os lançadores usam `~/Automations/automations/cartoes/config.json`. Se o projeto ficar em outro
+Os lançadores usam `~/Projetos/Automations/automations/cartoes/config.json`. Se o projeto ficar em outro
 local, edite o caminho padrão nos dois arquivos copiados. Também é possível
 definir `CARTOES_CONFIG` no ambiente do gateway. Eles importam o módulo `cartoes`
 instalado no ambiente Python próprio, sem depender do diretório corrente.
 
-Configure o fuso do Hermes **antes de criar os agendamentos**. Essa configuração
-afeta os outros horários do mesmo perfil; mantenha o fuso já existente se ele
-for `America/Sao_Paulo`. Reinicie o gateway após uma mudança:
+Configure o fuso do Hermes **antes de criar os agendamentos**. O fuso usado pelo
+cron no perfil padrão precisa ser `America/Sao_Paulo`; essa configuração afeta
+os outros agendamentos do mesmo perfil:
 
 ```bash
-hermes config set HERMES_TIMEZONE America/Sao_Paulo
+hermes config set timezone America/Sao_Paulo
 hermes gateway restart
 ```
 
@@ -175,8 +186,8 @@ hermes gateway restart
 Crie os agendamentos inicialmente pausados, com saída operacional local:
 
 ```bash
-hermes cron create "0 9 5 * *" --no-agent --script cartao_black.py --interpreter "$HOME/Automations/automations/cartoes/.venv/bin/python" --deliver local --name "Resumo cartão Black" --paused
-hermes cron create "0 9 20 * *" --no-agent --script cartao_latam.py --interpreter "$HOME/Automations/automations/cartoes/.venv/bin/python" --deliver local --name "Resumo cartão Latam" --paused
+hermes cron create "0 9 5 * *" --no-agent --script cartao_black.py --interpreter "$HOME/Projetos/Automations/automations/cartoes/.venv/bin/python" --deliver local --name "Resumo cartão Black" --paused
+hermes cron create "0 9 20 * *" --no-agent --script cartao_latam.py --interpreter "$HOME/Projetos/Automations/automations/cartoes/.venv/bin/python" --deliver local --name "Resumo cartão Latam" --paused
 hermes cron list
 hermes cron status
 ```
@@ -202,7 +213,8 @@ Hermes estiver em contêiner, projeto, planilhas, ambiente Python e histórico
 precisam estar acessíveis dentro do contêiner, com os caminhos correspondentes.
 
 Os lançadores verificam o dia em `America/Sao_Paulo`: Black só executa no dia 5 e
-Latam no dia 20. Fora do dia esperado, interrompem o envio. Para recuperar uma
+envia a competência do mês anterior; Latam só executa no dia 20 e envia a competência
+do próprio mês. Fora do dia esperado, interrompem o envio. Para recuperar uma
 execução atrasada ou com arquivo ausente, use o comando manual com `--month`;
 não force um mês diferente por `--scheduled`. O teste manual pelo Hermes, com
 `hermes cron run`, chama o lançador de **produção**; para testar sem enviar aos
@@ -211,15 +223,17 @@ amigos, use o comando Python com `--test-to` da etapa anterior.
 ### Histórico, repetição e falhas
 
 Em execuções com `--send`, incluindo os lançadores do Hermes, uma falha interrompe
-o lote e tenta enviar **um aviso somente ao proprietário**, no endereço
-`GMAIL_USER`. Isso inclui arquivo ausente, Excel corrompido, dados ou destinatários
+o lote e tenta enviar **um aviso ao proprietário**, para a conta Google
+autenticada pelo token OAuth, com cópia para `personal_copy_email` quando esse endereço
+está configurado. Isso inclui arquivo ausente, Excel corrompido, dados ou destinatários
 inválidos e erros operacionais. A abertura e a leitura das células são verificadas
 antes dos envios aos amigos. Se o Excel falhar nessa etapa, nenhum resumo é enviado.
 
 O aviso identifica cartão, referência, etapa e motivo, sem anexar a planilha,
 resumos ou erros internos que possam expor valores e credenciais. Mesmo com
-`--test-to`, o aviso de erro vai para `GMAIL_USER`. Prévias, consulta e manutenção
-do histórico continuam sem envio de e-mail.
+`--test-to`, os resumos vão para o endereço informado em `To` e para `personal_copy_email`
+em `Cc`; o aviso de erro vai para a conta Google autenticada e também ao `Cc` configurado.
+Prévias, consulta e manutenção do histórico continuam sem envio de e-mail.
 
 Se o erro ocorrer após o início dos envios, mensagens anteriores podem já ter
 sido aceitas pelo Gmail; o aviso orienta a conferir o histórico e a pasta Enviados.
@@ -228,13 +242,12 @@ pode falhar: nesse caso o script registra a falha nos logs do Hermes, termina co
 código 1 e não tenta enviar avisos recursivamente. Uma nova execução com erro pode
 gerar um novo aviso; isso não altera a proteção contra resumos duplicados.
 
-Se `config.json` não puder ser carregado, o aviso tenta usar o `.env` ao lado
-desse arquivo ou as variáveis `GMAIL_USER` e `GMAIL_APP_PASSWORD` do ambiente.
-Um `secrets_file` personalizado depende de uma configuração válida.
+Se `config.json` não puder ser carregado, o aviso tenta usar o token padrão do
+Hermes em `~/.hermes/google_token.json` (ou `$HERMES_HOME/google_token.json`).
 
 O histórico fica em `var/deliveries.sqlite3`. Cada envio é identificado por
 **mês + cartão + aba pessoal**. Uma execução posterior pula mensagens aceitas
-anteriormente pelo SMTP, inclusive se a planilha ou o endereço forem alterados.
+anteriormente pela API do Gmail, inclusive se a planilha ou o endereço forem alterados.
 O histórico também guarda endereço usado, identificador da mensagem e hash do
 arquivo de entrada. Faça backup da pasta `var`: perder ou restaurar um histórico
 antigo pode permitir mensagens repetidas.
@@ -250,7 +263,7 @@ quando o cadastro atual foi alterado.
 Estados:
 
 - `sent`: Gmail aceitou a mensagem; isso não confirma leitura ou entrega final.
-- `failed`: SMTP recusou a mensagem explicitamente; o comando de envio pode ser
+- `failed`: a API do Gmail recusou a mensagem explicitamente; o comando de envio pode ser
   repetido para tentar os destinatários ainda não enviados.
 - `unknown`: houve desconexão, timeout ou interrupção após iniciar o envio. O
   lote fica bloqueado até você conferir no Gmail para evitar duplicação.
@@ -259,19 +272,19 @@ Ao conferir um envio `unknown`, procure na pasta **Enviados** por destinatário,
 assunto e `Message-ID` do histórico. Se foi enviado, marque como concluído:
 
 ```bash
-.venv/bin/python cartoes.py --config config.json --card latam --month 2026-09 --recipient Iago --resolve sent
+.venv/bin/python cartoes.py --config config.json --card latam --month 2026-09 --recipient NOME_DA_ABA --resolve sent
 ```
 
 Se confirmar que **não** foi enviado:
 
 ```bash
-.venv/bin/python cartoes.py --config config.json --card latam --month 2026-09 --recipient Iago --resolve not-sent
-.venv/bin/python cartoes.py --config config.json --card latam --month 2026-09 --recipient Iago --send
+.venv/bin/python cartoes.py --config config.json --card latam --month 2026-09 --recipient NOME_DA_ABA --resolve not-sent
+.venv/bin/python cartoes.py --config config.json --card latam --month 2026-09 --recipient NOME_DA_ABA --send
 ```
 
 Há uma trava por pasta de histórico que impede dois processos de envio ou
 manutenção ao mesmo tempo. Não há repetição automática de um resultado incerto:
-SMTP e SQLite não oferecem uma transação conjunta de envio exatamente uma vez.
+a API do Gmail e o SQLite não oferecem uma transação conjunta de envio exatamente uma vez.
 
 ### Testes
 
@@ -279,18 +292,19 @@ SMTP e SQLite não oferecem uma transação conjunta de envio exatamente uma vez
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-A suíte usa planilhas sintéticas e SMTP simulado; nenhum teste envia e-mails reais.
+A suíte usa planilhas sintéticas e a API do Gmail simulada; nenhum teste envia e-mails reais.
 A amostra fictícia versionada em `tests/fixtures/anonymous_reports.json` cobre
 **24 blocos**, com totais esperados explícitos, incluindo pagamentos parciais,
 quitação, créditos, parcelas antigas e participantes sem movimento. Ela permite
 validar **11 mensagens Black e 3 Latam** em um clone sem arquivos pessoais.
 
-Se o exemplo pessoal
-`inputs/2026-09.xlsx` estiver na pasta, compara também os **24 blocos** com os dados
-salvos das abas pessoais e os totais disponíveis. A planilha pessoal não é incluída no Git. Os testes
+O teste com uma planilha real é opcional e somente local: se houver um arquivo
+privado `inputs/2026-09.xlsx` no clone, a suíte compara os **24 blocos** com os dados
+salvos. Esse teste usa esse caminho local independentemente do `input_source` da
+configuração de produção. A planilha pessoal não é incluída no Git. Os testes
 cobrem rateios, pagamentos, créditos, ausência de movimento, validações,
-formatação, virada do ano, fuso, repetição, falhas parciais, falhas após aceite SMTP,
-trava entre processos, avisos exclusivos ao proprietário e Excel corrompido na
+formatação, virada do ano, fuso, repetição, falhas parciais, falhas após aceite da API do Gmail,
+trava entre processos, avisos de falha ao proprietário e Excel corrompido na
 abertura ou durante a leitura das células.
 
 O [workflow de testes](../../.github/workflows/tests.yml) executa a suíte em pushes
@@ -309,9 +323,9 @@ Depois de alterar o script no servidor, reinstale no ambiente usado pelo Hermes:
 Se esta automação já estava instalada na raiz do repositório ou em
 `~/resumos-cartoes`, os caminhos do servidor também precisam ser ajustados:
 
-- Transfira `config.json` e `.env` para a nova pasta da automação e atualize
-  `input_dir` para `inputs` se mover as planilhas para essa pasta. Caminhos
-  absolutos que continuam válidos podem ser mantidos.
+- Transfira `config.json` para a nova pasta da automação. O padrão atual busca em
+  `Meu Drive/Cartão/<ano>/`; mantenha `input_source: "drive"`. Se ainda quiser
+  arquivos locais, defina `input_source: "local"` e ajuste `input_dir`.
 - Preserve a pasta de histórico indicada por `state_dir`, incluindo
   `deliveries.sqlite3`, para manter a proteção contra envios repetidos. Se mover
   `var/`, faça isso com os processos de envio parados.

@@ -1,5 +1,5 @@
 {
-  "input_dir": ".",
+  "input_dir": "inputs",
   "output_dir": "outputs",
   "state_dir": "var",
   "secrets_file": ".env",

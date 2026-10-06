@@ -7,9 +7,13 @@ from pathlib import Path
 import re
 import runpy
 import smtplib
+import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 import openpyxl
 
@@ -114,6 +118,17 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(report.has_movement)
         self.assertEqual(report.balance, Decimal("-7.65"))
         self.assertIn("Crédito a seu favor", app.render_html(report))
+
+    def test_no_payments_renders_zero_without_creating_movement(self):
+        self.change(lambda b: [setattr(b["Black"][f"F{r}"], "value", None) for r in (12, 13)])
+        report = self.reports()[0]
+        self.assertEqual(report.payments, ())
+        self.assertEqual(report.balance, report.spending)
+        html = app.render_html(report)
+        self.assertRegex(html, r"PAGAMENTOS</td><td[^>]*></td><td[^>]*>R\$ 0,00</td>")
+        self.assertIn("PAGAMENTOS: R$ 0,00", app.render_text(report))
+        self.change(lambda b: [setattr(b["Black"][f"F{r}"], "value", None) for r in (6, 7, 9)])
+        self.assertFalse(self.reports()[0].has_movement)
 
     def test_numeric_rounding_and_bad_values(self):
         self.assertEqual(app._money(0.1 + 0.2, "F6"), Decimal("0.30"))
@@ -252,16 +267,180 @@ class ReportTests(unittest.TestCase):
     def test_hermes_launchers_use_config_and_scheduled_production_mode(self):
         root = Path(__file__).resolve().parents[1]
         for card in ("black", "latam"):
-            with self.subTest(card=card), patch.dict(app.os.environ, {"CARTOES_CONFIG": str(self.config)}), patch.object(app, "main", return_value=0) as main:
-                with self.assertRaises(SystemExit) as exited:
-                    runpy.run_path(str(root / f"hermes/cartao_{card}.py"), run_name="__main__")
-                self.assertEqual(exited.exception.code, 0)
-                main.assert_called_once_with(["--config", str(self.config), "--card", card, "--scheduled", "--send"])
+            default = Path("~/Automations/automations/cartoes/config.json").expanduser()
+            for configured, expected in ((None, default), (str(self.config), self.config)):
+                with self.subTest(card=card, configured=configured), patch.dict(app.os.environ), patch.object(app, "main", return_value=0) as main:
+                    app.os.environ.pop("CARTOES_CONFIG", None)
+                    if configured is not None:
+                        app.os.environ["CARTOES_CONFIG"] = configured
+                    with self.assertRaises(SystemExit) as exited:
+                        runpy.run_path(str(root / f"hermes/cartao_{card}.py"), run_name="__main__")
+                    self.assertEqual(exited.exception.code, 0)
+                    main.assert_called_once_with(["--config", str(expected), "--card", card, "--scheduled", "--send"])
 
-    def test_missing_file_fails_without_sending(self):
+    def test_missing_file_notifies_only_owner_without_creating_ledger(self):
         self.path.unlink()
-        with patch.object(app, "smtp_connect", side_effect=AssertionError("must not connect")), redirect_stderr(StringIO()):
+        smtp = FakeSMTP()
+        with patch.object(app, "smtp_connect", return_value=smtp) as connect, redirect_stderr(StringIO()):
             self.assertEqual(app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"]), 1)
+        connect.assert_called_once()
+        self.assertEqual([m["To"] for m in smtp.messages], ["owner@gmail.com"])
+        self.assertIn("[ERRO]", smtp.messages[0]["Subject"])
+        self.assertIn("Nenhum resumo foi enviado", smtp.messages[0].get_content())
+        self.assertFalse(self.settings.state_dir.exists())
+
+    def test_corrupt_excel_at_open_or_lazy_read_notifies_only_owner(self):
+        for failure in ("archive", "cell", "xml"):
+            with self.subTest(failure=failure):
+                self.make_workbook()
+                if failure == "archive":
+                    self.path.write_bytes(b"not an Excel archive")
+                else:
+                    with ZipFile(self.path) as source:
+                        files = [(name, source.read(name)) for name in source.namelist()]
+                    with ZipFile(self.path, "w") as target:
+                        for name, data in files:
+                            if name == "xl/worksheets/sheet1.xml":
+                                if failure == "cell":
+                                    data, count = re.subn(rb'(<c r="F6"[^>]*><v>)10(</v>)', rb'\g<1>PRIVATE_CELL_CONTENT\g<2>', data)
+                                    self.assertEqual(count, 1)
+                                else:
+                                    data = data.replace(b"</sheetData>", b"</bad-sheetData>")
+                            target.writestr(name, data)
+                smtp, stderr = FakeSMTP(), StringIO()
+                with patch.object(app, "smtp_connect", return_value=smtp) as connect, redirect_stderr(stderr):
+                    code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+                self.assertEqual(code, 1)
+                connect.assert_called_once()
+                self.assertEqual(len(smtp.messages), 1)
+                message = smtp.messages[0]
+                self.assertEqual(message["To"], "owner@gmail.com")
+                self.assertIsNone(message["Cc"])
+                self.assertIsNone(message["Bcc"])
+                self.assertEqual(list(message.iter_attachments()), [])
+                self.assertIn("Excel", message.get_content())
+                self.assertIn("Nenhum resumo foi enviado", message.get_content())
+                for text in (stderr.getvalue(), message.as_string()):
+                    self.assertNotIn("PRIVATE_CELL_CONTENT", text)
+                    self.assertNotIn("Traceback", text)
+                self.assertFalse(self.settings.state_dir.exists())
+                self.assertTrue(smtp.closed)
+
+    def test_invalid_values_or_recipients_notify_only_owner(self):
+        for failure in ("value", "recipient"):
+            with self.subTest(failure=failure):
+                if failure == "value":
+                    self.change(lambda b: setattr(b["Black"]["F6"], "value", "=10"))
+                else:
+                    self.make_workbook()
+                    data = json.loads(self.config.read_text())
+                    data["recipients"][1]["email"] = None
+                    self.config.write_text(json.dumps(data))
+                smtp = FakeSMTP()
+                with patch.object(app, "smtp_connect", return_value=smtp), redirect_stderr(StringIO()):
+                    code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+                self.assertEqual(code, 1)
+                self.assertEqual([m["To"] for m in smtp.messages], ["owner@gmail.com"])
+                self.assertFalse((self.settings.state_dir / "deliveries.sqlite3").exists())
+
+    def test_invalid_config_uses_owner_credentials_from_adjacent_env(self):
+        self.config.write_text("{invalid JSON")
+        self.settings.secrets_file.write_text("GMAIL_USER=owner@gmail.com\nGMAIL_APP_PASSWORD=abcdefghijklmnop\n")
+        self.settings.secrets_file.chmod(0o600)
+        smtp = FakeSMTP()
+        with patch.dict(app.os.environ, {}, clear=True), patch.object(app, "smtp_connect", return_value=smtp), redirect_stderr(StringIO()):
+            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+        self.assertEqual(code, 1)
+        self.assertEqual([m["To"] for m in smtp.messages], ["owner@gmail.com"])
+        self.assertIn("configuração", smtp.messages[0].get_content())
+
+    def test_dry_run_errors_never_connect_to_gmail(self):
+        self.path.write_bytes(b"not an Excel archive")
+        for mode in ([], ["--dry-run"]):
+            with self.subTest(mode=mode), patch.object(app, "smtp_connect") as connect, redirect_stderr(StringIO()):
+                code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", *mode])
+                self.assertEqual(code, 1)
+                connect.assert_not_called()
+
+    def test_alert_failure_does_not_retry_or_hide_original_error(self):
+        self.path.unlink()
+        for error in (smtplib.SMTPAuthenticationError(535, b"SECRET_SERVER_RESPONSE"), TimeoutError("SECRET_SERVER_RESPONSE")):
+            with self.subTest(error=type(error).__name__):
+                stderr = StringIO()
+                with patch.object(app, "smtp_connect", side_effect=error) as connect, redirect_stderr(stderr):
+                    code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+                self.assertEqual(code, 1)
+                connect.assert_called_once()
+                self.assertIn("ausente", stderr.getvalue())
+                self.assertIn("Não foi possível confirmar o aviso", stderr.getvalue())
+                self.assertNotIn("SECRET_SERVER_RESPONSE", stderr.getvalue())
+
+    def test_alert_is_not_redirected_to_test_recipient(self):
+        self.path.unlink()
+        smtp = FakeSMTP()
+        with patch.object(app, "smtp_connect", return_value=smtp), redirect_stderr(StringIO()):
+            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send", "--test-to", "test@example.com"])
+        self.assertEqual(code, 1)
+        self.assertEqual([m["To"] for m in smtp.messages], ["owner@gmail.com"])
+
+    def test_alert_rejection_does_not_retry(self):
+        self.path.unlink()
+        smtp = FakeSMTP(1, smtplib.SMTPRecipientsRefused({"owner@gmail.com": (550, b"rejected")}))
+        stderr = StringIO()
+        with patch.object(app, "smtp_connect", return_value=smtp) as connect, redirect_stderr(stderr):
+            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+        self.assertEqual(code, 1)
+        connect.assert_called_once()
+        self.assertEqual(smtp.calls, 1)
+        self.assertTrue(smtp.closed)
+        self.assertIn("Não foi possível confirmar o aviso", stderr.getvalue())
+
+    def test_missing_gmail_credentials_preserves_failure_without_connecting(self):
+        self.path.unlink()
+        stderr = StringIO()
+        with patch.dict(app.os.environ, {}, clear=True), patch.object(app, "smtp_connect") as connect, redirect_stderr(stderr):
+            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+        self.assertEqual(code, 1)
+        connect.assert_not_called()
+        self.assertIn("ausente", stderr.getvalue())
+        self.assertIn("Não foi possível confirmar o aviso", stderr.getvalue())
+
+    def test_unexpected_failure_alert_does_not_expose_exception_payload(self):
+        smtp, stderr = FakeSMTP(), StringIO()
+        with patch.object(app, "read_reports", side_effect=RuntimeError("PRIVATE_PAYLOAD")), patch.object(app, "smtp_connect", return_value=smtp), redirect_stderr(stderr):
+            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+        self.assertEqual(code, 1)
+        self.assertEqual([m["To"] for m in smtp.messages], ["owner@gmail.com"])
+        self.assertIn("RuntimeError", smtp.messages[0].get_content())
+        self.assertNotIn("PRIVATE_PAYLOAD", stderr.getvalue() + smtp.messages[0].get_content())
+
+    def test_partial_send_failure_sends_owner_alert_and_keeps_history(self):
+        delivery = FakeSMTP(2, TimeoutError("PRIVATE_SERVER_RESPONSE"))
+        alert = FakeSMTP()
+        with patch.object(app, "smtp_connect", side_effect=[delivery, alert]), redirect_stderr(StringIO()):
+            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+        self.assertEqual(code, 1)
+        self.assertEqual([m["To"] for m in delivery.messages], ["ana@example.com"])
+        self.assertEqual([m["To"] for m in alert.messages], ["owner@gmail.com"])
+        self.assertIn("Alguns resumos podem já ter sido aceitos", alert.messages[0].get_content())
+        self.assertNotIn("Nenhum resumo foi enviado", alert.messages[0].get_content())
+        self.assertNotIn("PRIVATE_SERVER_RESPONSE", alert.messages[0].get_content())
+        with sqlite3.connect(self.settings.state_dir / "deliveries.sqlite3") as db:
+            self.assertEqual(db.execute("SELECT sheet, status FROM deliveries ORDER BY sheet").fetchall(), [("Ana", "sent"), ("Dora", "unknown")])
+
+    def test_history_shows_original_address_and_update_time(self):
+        app.send_reports([self.reports()[0]], self.settings, "hash", connector=lambda *_: FakeSMTP())
+        data = json.loads(self.config.read_text())
+        data["recipients"][0]["email"] = "changed@example.com"
+        self.config.write_text(json.dumps(data))
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            code = app.main(["--config", str(self.config), "--history", "--month", "2026-09"])
+        self.assertEqual(code, 0)
+        self.assertIn("destinatário | atualização (UTC) | Message-ID", stdout.getvalue())
+        self.assertIn("ana@example.com", stdout.getvalue())
+        self.assertNotIn("changed@example.com", stdout.getvalue())
+        self.assertRegex(stdout.getvalue(), r"\d{4}-\d{2}-\d{2}T.*\+00:00")
 
     def test_partial_failure_and_retry_skip_success(self):
         reports = self.reports()
@@ -294,6 +473,15 @@ class ReportTests(unittest.TestCase):
         with self.assertRaisesRegex(app.ReportError, "incerto"):
             app.send_reports([report], self.settings, "hash", connector=lambda *_: self.fail("must not connect"))
 
+    def test_database_failure_after_smtp_acceptance_blocks_retry(self):
+        report, smtp = self.reports()[0], FakeSMTP()
+        with patch.object(app.Ledger, "finish", side_effect=sqlite3.OperationalError("disk error")):
+            with self.assertRaises(sqlite3.OperationalError):
+                app.send_reports([report], self.settings, "hash", connector=lambda *_: smtp)
+        self.assertEqual(len(smtp.messages), 1)
+        with self.assertRaisesRegex(app.ReportError, "incerto"):
+            app.send_reports([report], self.settings, "hash", connector=lambda *_: self.fail("must not reconnect"))
+
     def test_test_delivery_redirects_without_production_history(self):
         smtp = FakeSMTP()
         app.send_reports(self.reports(), self.settings, "hash", test_to="owner@gmail.com", connector=lambda *_: smtp)
@@ -316,6 +504,21 @@ class ReportTests(unittest.TestCase):
                 with app.run_lock(self.settings.state_dir):
                     self.fail("second sender obtained lock")
 
+    def test_lock_blocks_a_separate_process(self):
+        script = """import sys
+from pathlib import Path
+import cartoes
+try:
+    with cartoes.run_lock(Path(sys.argv[1])):
+        sys.exit(2)
+except cartoes.ReportError:
+    sys.exit(0)
+"""
+        with app.run_lock(self.settings.state_dir):
+            result = subprocess.run([sys.executable, "-c", script, str(self.settings.state_dir)],
+                                    cwd=Path(app.__file__).resolve().parent, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
     def test_smtp_auth_error_occurs_before_claim(self):
         with self.assertRaises(smtplib.SMTPAuthenticationError):
             app.send_reports(self.reports(), self.settings, "hash", connector=lambda *_: (_ for _ in ()).throw(smtplib.SMTPAuthenticationError(535, b"error")))
@@ -328,23 +531,82 @@ class ReportTests(unittest.TestCase):
         self.settings.secrets_file.write_text("GMAIL_USER=owner@gmail.com\nGMAIL_APP_PASSWORD=abcd efgh ijkl mnop\n")
         self.settings.secrets_file.chmod(0o644)
         with self.assertRaisesRegex(app.ReportError, "600"):
-            app.gmail_credentials(self.settings)
+            app.gmail_credentials(self.settings.secrets_file)
         self.settings.secrets_file.chmod(0o600)
         with patch.dict(app.os.environ, {}, clear=True):
-            self.assertEqual(app.gmail_credentials(self.settings), ("owner@gmail.com", "abcdefghijklmnop"))
+            self.assertEqual(app.gmail_credentials(self.settings.secrets_file), ("owner@gmail.com", "abcdefghijklmnop"))
+
+
+class AnonymousWorkbookTests(unittest.TestCase):
+    def test_24_fictitious_blocks_without_private_workbook(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures/anonymous_reports.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.json"
+            config.write_text(json.dumps({"owner_name": "Proprietário fictício", "recipients": [
+                {"sheet": p["sheet"], "participant": p["participant"], "email": None} for p in fixture["people"]
+            ]}), encoding="utf-8")
+            settings = app.load_settings(config)
+            workbook = openpyxl.Workbook()
+            workbook.remove(workbook.active)
+            expected_purchases = {}
+            for card, title in (("black", "Black"), ("latam", "Latam")):
+                sheet = workbook.create_sheet(title)
+                sheet["A2"] = "PARTICIPANTES"
+                row = 4
+                for column, person in enumerate(fixture["people"], 6):
+                    sheet.cell(2, column, person["participant"])
+                    expected_purchases[card, person["sheet"]] = []
+                    sheet.cell(row, 1, "SEÇÃO DE COMPRAS")
+                    row += 1
+                    for value in person[card]["purchases"]:
+                        amount = Decimal(value)
+                        purchase = app.Purchase(date(2025, 1, 3), ("Descrição fictícia extensa com <símbolos> & detalhes " * 5).strip(),
+                                                "2 de 12", amount * 2, amount)
+                        sheet.cell(row, 1, purchase.date)
+                        sheet.cell(row, 2, purchase.description)
+                        sheet.cell(row, 3, purchase.installment)
+                        sheet.cell(row, 4, float(purchase.total))
+                        sheet.cell(row, column, float(amount))
+                        expected_purchases[card, person["sheet"]].append(purchase)
+                        row += 1
+                sheet.cell(row, 1, "TOTAL")
+                row += 1
+                for column, person in enumerate(fixture["people"], 6):
+                    for value in person[card]["payments"]:
+                        sheet.cell(row, 1, "PAGAMENTOS")
+                        sheet.cell(row, column, float(Decimal(value)))
+                        row += 1
+                sheet.cell(row, 1, "TOTAL GERAL")
+            for person in fixture["people"]:
+                workbook.create_sheet(person["sheet"])
+            path = root / f"{fixture['month']}.xlsx"
+            workbook.save(path)
+            workbook.close()
+            for card in ("black", "latam"):
+                reports = app.read_reports(path, settings, card, fixture["month"])
+                self.assertEqual(len(reports), 12)
+                self.assertEqual(sum(r.has_movement for r in reports), fixture["expected_messages"][card])
+                for report, person in zip(reports, fixture["people"], strict=True):
+                    with self.subTest(card=card, sheet=person["sheet"]):
+                        expected = person[card]
+                        self.assertEqual(report.purchases, tuple(expected_purchases[card, person["sheet"]]))
+                        self.assertEqual(report.payments, tuple(Decimal(v) for v in expected["payments"]))
+                        self.assertEqual(report.spending, Decimal(expected["expected_spending"]))
+                        self.assertEqual(report.balance, Decimal(expected["expected_balance"]))
 
 
 class ProvidedWorkbookTests(unittest.TestCase):
     """Optional private fixture: never committed, included in local validation."""
     root = Path(__file__).resolve().parents[1]
 
-    @unittest.skipUnless((root / "2026-09.xlsx").exists(), "Exemplo pessoal não está no checkout")
+    @unittest.skipUnless((root / "inputs/2026-09.xlsx").exists(), "Exemplo pessoal não está no checkout")
     def test_all_24_blocks_match_independent_cached_personal_summaries(self):
         settings = app.load_settings(self.root / "config.example.json")
-        wb = openpyxl.load_workbook(self.root / "2026-09.xlsx", data_only=True)
+        wb = openpyxl.load_workbook(self.root / "inputs/2026-09.xlsx", data_only=True)
         self.addCleanup(wb.close)
         for card, start, share_column, expected_count in (("black", 1, 5, 11), ("latam", 7, 11, 3)):
-            reports = app.read_reports(self.root / "2026-09.xlsx", settings, card, "2026-09")
+            reports = app.read_reports(self.root / "inputs/2026-09.xlsx", settings, card, "2026-09")
             self.assertEqual(len(reports), 12)
             self.assertEqual(sum(r.has_movement for r in reports), expected_count)
             for report in reports:
@@ -362,6 +624,9 @@ class ProvidedWorkbookTests(unittest.TestCase):
                                 app._money(source.cell(row, start + 3).value, "fixture"), app._money(value, "fixture")))
                         elif when == "PAGAMENTOS":
                             payments.append(app._money(value, "fixture"))
+                        elif when in ("TOTAL", "TOTAL GERAL"):
+                            expected = Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding="ROUND_HALF_UP")
+                            self.assertEqual(report.spending if when == "TOTAL" else report.balance, expected)
                     self.assertEqual(report.purchases, tuple(purchases))
                     self.assertEqual(report.payments, tuple(payments))
 

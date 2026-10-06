@@ -1,12 +1,15 @@
+# Ambientes e artefatos de build de cada automação
 .venv/
 __pycache__/
 *.egg-info/
 build/
 dist/
+# Configurações e dados privados de cada automação
 .env
 config.json
 outputs/
 var/
 *.xlsx
 *.xls
+# Arquivos locais do sistema
 .DS_Store

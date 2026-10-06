@@ -1,0 +1,44 @@
+name: Testes das automações
+
+on:
+  push:
+    paths:
+      - "automations/cartoes/**"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    paths:
+      - "automations/cartoes/**"
+      - ".github/workflows/tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cartoes:
+    name: Cartões / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
+    defaults:
+      run:
+        working-directory: automations/cartoes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: automations/cartoes/pyproject.toml
+      - name: Instalar a automação
+        run: python -m pip install .
+      - name: Executar testes com SMTP simulado
+        run: python -m unittest discover -s tests -v

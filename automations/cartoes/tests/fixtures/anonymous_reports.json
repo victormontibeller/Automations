@@ -1,0 +1,252 @@
+{
+  "month": "2026-09",
+  "expected_messages": {
+    "black": 11,
+    "latam": 3
+  },
+  "people": [
+    {
+      "sheet": "Pessoa01",
+      "participant": "Pessoa01",
+      "black": {
+        "purchases": [
+          "12.50",
+          "7.50"
+        ],
+        "payments": [
+          "-5.00"
+        ],
+        "expected_spending": "20.00",
+        "expected_balance": "15.00"
+      },
+      "latam": {
+        "purchases": [
+          "30.00"
+        ],
+        "payments": [
+          "-30.00"
+        ],
+        "expected_spending": "30.00",
+        "expected_balance": "0.00"
+      }
+    },
+    {
+      "sheet": "Pessoa02",
+      "participant": "Pessoa02",
+      "black": {
+        "purchases": [
+          "20.00"
+        ],
+        "payments": [
+          "-20.00"
+        ],
+        "expected_spending": "20.00",
+        "expected_balance": "0.00"
+      },
+      "latam": {
+        "purchases": [],
+        "payments": [
+          "-8.00"
+        ],
+        "expected_spending": "0.00",
+        "expected_balance": "-8.00"
+      }
+    },
+    {
+      "sheet": "Pessoa03",
+      "participant": "Pessoa03",
+      "black": {
+        "purchases": [
+          "15.00"
+        ],
+        "payments": [],
+        "expected_spending": "15.00",
+        "expected_balance": "15.00"
+      },
+      "latam": {
+        "purchases": [
+          "25.00",
+          "-5.00"
+        ],
+        "payments": [
+          "-10.00"
+        ],
+        "expected_spending": "20.00",
+        "expected_balance": "10.00"
+      }
+    },
+    {
+      "sheet": "Pessoa04",
+      "participant": "Pessoa04/Grupo",
+      "black": {
+        "purchases": [],
+        "payments": [
+          "-10.00"
+        ],
+        "expected_spending": "0.00",
+        "expected_balance": "-10.00"
+      },
+      "latam": {
+        "purchases": [],
+        "payments": [],
+        "expected_spending": "0.00",
+        "expected_balance": "0.00"
+      }
+    },
+    {
+      "sheet": "Pessoa05",
+      "participant": "Pessoa05",
+      "black": {
+        "purchases": [
+          "50.00",
+          "-7.25"
+        ],
+        "payments": [
+          "-10.00",
+          "-5.00"
+        ],
+        "expected_spending": "42.75",
+        "expected_balance": "27.75"
+      },
+      "latam": {
+        "purchases": [],
+        "payments": [],
+        "expected_spending": "0.00",
+        "expected_balance": "0.00"
+      }
+    },
+    {
+      "sheet": "Pessoa06",
+      "participant": "Pessoa06",
+      "black": {
+        "purchases": [
+          "0.10",
+          "0.20"
+        ],
+        "payments": [],
+        "expected_spending": "0.30",
+        "expected_balance": "0.30"
+      },
+      "latam": {
+        "purchases": [],
+        "payments": [],
+        "expected_spending": "0.00",
+        "expected_balance": "0.00"
+      }
+    },
+    {
+      "sheet": "Pessoa07",
+      "participant": "Pessoa07",
+      "black": {
+        "purchases": [
+          "99.99"
+        ],
+        "payments": [
+          "-100.00"
+        ],
+        "expected_spending": "99.99",
+        "expected_balance": "-0.01"
+      },
+      "latam": {
+        "purchases": [],
+        "payments": [],
+        "expected_spending": "0.00",
+        "expected_balance": "0.00"
+      }
+    },
+    {
+      "sheet": "Pessoa08",
+      "participant": "Pessoa08",
+      "black": {
+        "purchases": [
+          "40.00"
+        ],
+        "payments": [
+          "-10.00",
+          "-20.00"
+        ],
+        "expected_spending": "40.00",
+        "expected_balance": "10.00"
+      },
+      "latam": {
+        "purchases": [],
+        "payments": [],
+        "expected_spending": "0.00",
+        "expected_balance": "0.00"
+      }
+    },
+    {
+      "sheet": "Pessoa09",
+      "participant": "Pessoa09",
+      "black": {
+        "purchases": [
+          "-12.00"
+        ],
+        "payments": [],
+        "expected_spending": "-12.00",
+        "expected_balance": "-12.00"
+      },
+      "latam": {
+        "purchases": [],
+        "payments": [],
+        "expected_spending": "0.00",
+        "expected_balance": "0.00"
+      }
+    },
+    {
+      "sheet": "Pessoa10",
+      "participant": "Pessoa10",
+      "black": {
+        "purchases": [
+          "8.00",
+          "8.00"
+        ],
+        "payments": [
+          "-16.00"
+        ],
+        "expected_spending": "16.00",
+        "expected_balance": "0.00"
+      },
+      "latam": {
+        "purchases": [],
+        "payments": [],
+        "expected_spending": "0.00",
+        "expected_balance": "0.00"
+      }
+    },
+    {
+      "sheet": "Pessoa11",
+      "participant": "Pessoa11",
+      "black": {
+        "purchases": [
+          "1234.56"
+        ],
+        "payments": [],
+        "expected_spending": "1234.56",
+        "expected_balance": "1234.56"
+      },
+      "latam": {
+        "purchases": [],
+        "payments": [],
+        "expected_spending": "0.00",
+        "expected_balance": "0.00"
+      }
+    },
+    {
+      "sheet": "Pessoa12",
+      "participant": "Pessoa12",
+      "black": {
+        "purchases": [],
+        "payments": [],
+        "expected_spending": "0.00",
+        "expected_balance": "0.00"
+      },
+      "latam": {
+        "purchases": [],
+        "payments": [],
+        "expected_spending": "0.00",
+        "expected_balance": "0.00"
+      }
+    }
+  ]
+}

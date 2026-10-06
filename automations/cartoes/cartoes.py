@@ -192,7 +192,7 @@ def read_reports(path: Path | BinaryIO, settings: Settings, card: str, month: st
     try:
         workbook = openpyxl.load_workbook(path, data_only=False, read_only=True)
     except Exception as exc:
-        raise ReportError(f"Não foi possível abrir {path.name}. Verifique se a cópia do Excel está completa.") from exc
+        raise ReportError("Não foi possível abrir o Excel. Verifique se o arquivo está íntegro e a cópia está completa.") from exc
     try:
         expected = {"Black", "Latam"} | {r.sheet for r in settings.recipients}
         unknown = set(workbook.sheetnames) - expected
@@ -203,7 +203,12 @@ def read_reports(path: Path | BinaryIO, settings: Settings, card: str, month: st
             raise ReportError("Abas ausentes: " + ", ".join(sorted(missing)))
         source = workbook[CARDS[card][0]]
         # Materialize once: read-only random access reparses XML repeatedly.
-        rows = list(source.iter_rows())
+        try:
+            rows = list(source.iter_rows())
+        except Exception as exc:
+            # In read-only mode openpyxl parses cell values lazily. Keep raw
+            # parser errors (which can contain cell contents) out of the logs.
+            raise ReportError("Não foi possível ler as células do Excel. Verifique se o arquivo está íntegro e a cópia está completa.") from exc
         if len(rows) < 4 or len(rows[1]) < 6:
             raise ReportError(f"{source.title}: layout inválido; cabeçalhos esperados na linha 2 a partir de F.")
         headers: dict[str, int] = {}
@@ -308,7 +313,7 @@ def render_html(report: Report) -> str:
         return row_open + cell(label, style, 3) + cell("", style) + cell(brl(amount), number + style) + "</tr>"
 
     rows.append(summary_row("TOTAL", report.spending, True))
-    rows.extend(summary_row("PAGAMENTOS", amount) for amount in report.payments)
+    rows.extend(summary_row("PAGAMENTOS", amount) for amount in (report.payments or (ZERO,)))
     rows.append(summary_row("TOTAL GERAL", report.balance, True))
     status = "Saldo quitado." if report.balance == ZERO else "Crédito a seu favor." if report.balance < ZERO else "Saldo restante a pagar."
     title = f"Cartão {report.card.upper()} {report.month}"
@@ -339,7 +344,7 @@ def render_text(report: Report) -> str:
     lines = ["\n\n".join(greeting[:3]), "", subject(report), "", "Data | Lançamento | Parcelas | Total | Rateio"]
     lines += [f"{p.date:%d/%m/%Y} | {p.description} | {p.installment} | {brl(p.total)} | {brl(p.share)}" for p in report.purchases]
     lines += ["", "TOTAL: " + brl(report.spending)]
-    lines += ["PAGAMENTOS: " + brl(p) for p in report.payments]
+    lines += ["PAGAMENTOS: " + brl(p) for p in (report.payments or (ZERO,))]
     lines += ["TOTAL GERAL: " + brl(report.balance), "O valor individual está na coluna Rateio."]
     lines += ["", greeting[3]]
     return "\n".join(lines) + "\n"
@@ -389,13 +394,13 @@ def write_previews(reports: list[Report], output: Path) -> None:
     manifest.write_text(json.dumps(files, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def gmail_credentials(settings: Settings) -> tuple[str, str]:
+def gmail_credentials(secrets_file: Path) -> tuple[str, str]:
     # A deliberately small KEY=VALUE parser. Never execute/source the file.
     values = {}
-    if settings.secrets_file.exists():
-        if settings.secrets_file.stat().st_mode & 0o077:
+    if secrets_file.exists():
+        if secrets_file.stat().st_mode & 0o077:
             raise ReportError("O arquivo de credenciais deve ter permissão 600 (chmod 600 .env).")
-        for line in settings.secrets_file.read_text(encoding="utf-8").splitlines():
+        for line in secrets_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -480,7 +485,7 @@ def send_reports(reports: list[Report], settings: Settings, source_hash: str, *,
         return 0, 0
     if any(not r.owner_name or r.owner_name == "[seu nome]" for r in reports):
         raise ReportError("Preencha owner_name na configuração antes de enviar: é o nome apresentado na saudação do Hermes.")
-    user, password = gmail_credentials(settings)
+    user, password = gmail_credentials(settings.secrets_file)
     with run_lock(settings.state_dir):
         ledger = None if test_to else Ledger(settings.state_dir / "deliveries.sqlite3")
         connection = None
@@ -543,12 +548,49 @@ def maintain_ledger(settings: Settings, month: str | None, card: str | None, rec
                 ledger.db.execute("UPDATE deliveries SET status=?,note=?,updated_at=? WHERE month=? AND card=? AND sheet=?",
                                   (new_status, "Conferido manualmente pelo proprietário.", datetime.now(timezone.utc).isoformat(), month, card, recipient))
                 ledger.db.commit()
-            rows = ledger.db.execute("SELECT month,card,sheet,status,message_id FROM deliveries ORDER BY month,card,sheet").fetchall()
+            rows = ledger.db.execute("SELECT month,card,sheet,status,recipient,updated_at,message_id FROM deliveries ORDER BY month,card,sheet").fetchall()
+            print("mês | cartão | aba | estado | destinatário | atualização (UTC) | Message-ID")
             for row in rows:
                 if (month is None or row["month"] == month) and (card is None or row["card"] == card) and (recipient is None or row["sheet"] == recipient):
                     print(" | ".join(str(value) for value in row))
         finally:
             ledger.close()
+
+
+def notify_owner(settings: Settings | None, config_path: Path, card: str | None,
+                 month: str | None, stage: str, reason: str) -> None:
+    """One best-effort alert to the authenticated owner; never use recipients."""
+    secrets_file = settings.secrets_file if settings else config_path.resolve().parent / ".env"
+    user, password = gmail_credentials(secrets_file)
+    message = EmailMessage()
+    message["From"] = formataddr(("Hermes — aviso da automação", user))
+    message["To"] = user
+    message["Subject"] = "[ERRO] Resumos dos cartões" + (f" — {card.upper()}" if card else "") + (f" {month}" if month else "")
+    message["Date"] = format_datetime(datetime.now(timezone.utc))
+    message["Message-ID"] = make_msgid(domain=user.split("@")[-1])
+    outcome = (
+        "A execução foi interrompida durante a etapa de envio. Alguns resumos podem já ter sido aceitos pelo Gmail. "
+        "Confira o histórico e a pasta Enviados antes de repetir; resultados incertos precisam de conferência manual."
+        if stage == "envio dos resumos" else
+        "A falha ocorreu antes da etapa de envio. Nenhum resumo foi enviado nesta execução."
+    )
+    message.set_content(
+        "Olá! Sou o Hermes, seu assistente pessoal.\n\n"
+        "Não consegui concluir a execução dos resumos dos cartões.\n\n"
+        f"Cartão: {card.upper() if card else 'não definido'}\n"
+        f"Referência: {month or 'não definida'}\n"
+        f"Etapa: {stage}\n"
+        f"Motivo: {reason}\n\n"
+        f"{outcome}\n\n"
+        "Este aviso foi enviado somente para você.\n"
+    )
+    connection = smtp_connect(user, password)
+    try:
+        refused = connection.send_message(message)
+        if refused:
+            raise smtplib.SMTPRecipientsRefused(refused)
+    finally:
+        connection.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -565,10 +607,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--test-to", help="Com --send, redirecionar todos os resumos a um endereço de teste")
     parser.add_argument("--scheduled", action="store_true", help="Validar dia previsto e selecionar mês anterior")
     args = parser.parse_args(argv)
+    settings = None
+    month = None
+    stage = "configuração"
     try:
         settings = load_settings(args.config)
         if args.month:
-            validate_month(args.month)
+            month = validate_month(args.month)
         if args.history or args.resolve:
             if args.scheduled or args.test_to:
                 raise ReportError("Histórico não aceita --scheduled ou --test-to.")
@@ -586,6 +631,7 @@ def main(argv: list[str] | None = None) -> int:
             month = args.month
         if args.test_to and not args.send:
             raise ReportError("--test-to exige --send.")
+        stage = "leitura e validação do Excel"
         # Snapshot the bytes once so the audit hash and report share the same input.
         path = settings.input_dir / f"{month}.xlsx"
         try:
@@ -603,6 +649,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ReportError("Aba pessoal não cadastrada ou desativada.")
         active = [r for r in reports if r.has_movement]
         if args.send:
+            stage = "envio dos resumos"
             count, skipped = send_reports(active, settings, hashlib.sha256(source_bytes).hexdigest(), test_to=args.test_to)
             print(f"{args.card.upper()} {month}: {count} mensagens {'de teste ' if args.test_to else ''}aceitas pelo SMTP; {skipped} já enviadas; {len(reports) - len(active)} sem movimento.")
         else:
@@ -610,12 +657,19 @@ def main(argv: list[str] | None = None) -> int:
             write_previews(active, folder)
             print(f"Prévia {args.card.upper()} {month}: {len(active)} resumos em {folder}; {len(reports) - len(active)} sem movimento. Nenhum e-mail enviado.")
         return 0
-    except ReportError as exc:
-        print(f"Erro: {exc}", file=sys.stderr)
-        return 1
-    except (smtplib.SMTPException, OSError, sqlite3.Error) as exc:
-        # Exception payloads may contain SMTP addresses or credential server output.
-        print(f"Erro operacional ({type(exc).__name__}). Verifique Gmail, permissões e acesso ao histórico.", file=sys.stderr)
+    except Exception as exc:
+        # Only our controlled diagnostics may include details. Raw exceptions
+        # can contain cell values, SMTP addresses or credential server output.
+        reason = str(exc) if isinstance(exc, ReportError) else f"Falha operacional ({type(exc).__name__}). Verifique Gmail, permissões e acesso aos arquivos e ao histórico."
+        print(f"Erro: {reason}", file=sys.stderr)
+        if args.send:
+            try:
+                notify_owner(settings, args.config, args.card, month, stage, reason)
+            except Exception as alert_error:
+                # Never retry recursively, notify friends or mask the failure.
+                print(f"Não foi possível confirmar o aviso ao proprietário ({type(alert_error).__name__}). Confira o Gmail e os logs do Hermes.", file=sys.stderr)
+            else:
+                print("Aviso de falha aceito pelo Gmail, somente para o proprietário.", file=sys.stderr)
         return 1
 
 

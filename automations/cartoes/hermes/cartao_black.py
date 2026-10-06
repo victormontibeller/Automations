@@ -5,6 +5,5 @@ import sys
 
 from cartoes import main
 
-config = Path(os.environ.get("CARTOES_CONFIG", "~/resumos-cartoes/config.json")).expanduser()
+config = Path(os.environ.get("CARTOES_CONFIG", "~/Automations/automations/cartoes/config.json")).expanduser()
 sys.exit(main(["--config", str(config), "--card", "black", "--scheduled", "--send"]))
-

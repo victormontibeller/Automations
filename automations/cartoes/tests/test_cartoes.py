@@ -739,7 +739,7 @@ except cartoes.ReportError:
         hermes_home = self.root / "profile-hermes"
         with patch.dict(app.os.environ, {"HERMES_HOME": str(hermes_home)}):
             settings = app.load_settings(self.config)
-        self.assertEqual(settings.google_token_file, hermes_home / "google_token.json")
+        self.assertEqual(settings.google_token_file, (hermes_home / "google_token.json").resolve())
 
 
 class AnonymousWorkbookTests(unittest.TestCase):

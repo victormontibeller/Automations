@@ -314,6 +314,8 @@ class ReportTests(unittest.TestCase):
         self.assertIsNone(data["owner_name"])
         self.assertIsNone(data["payment_footer"])
         self.assertIsNone(data["personal_copy_email"])
+        self.assertEqual(data["input_source"], "drive")
+        self.assertEqual(data["input_dir"], "input")
         self.assertEqual(data["sender_name"], "Hermes")
         recipients = data["recipients"]
         self.assertEqual(len(recipients), 12)

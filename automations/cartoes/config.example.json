@@ -1,5 +1,6 @@
 {
   "input_source": "drive",
+  "input_dir": "input",
   "drive_folder_name": "Cartão",
   "output_dir": "outputs",
   "state_dir": "var",

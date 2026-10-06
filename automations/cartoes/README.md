@@ -38,7 +38,8 @@ Edite `config.json`:
 - `input_source`: `drive` (padrão) busca em `Meu Drive/<drive_folder_name>/<ano>/<AAAA-MM>.xlsx`;
   `local` habilita a pasta `input_dir` apenas como alternativa local.
 - `drive_folder_name`: nome exato da pasta na raiz de `Meu Drive`; o padrão é `Cartão`.
-- `input_dir`: pasta local usada somente quando `input_source` for `local`.
+- `input_dir`: pasta local usada somente quando `input_source` for `local`; o exemplo
+  define `input` (relativo à pasta do `config.json`).
 - `output_dir`: pasta das prévias HTML e texto.
 - `state_dir`: pasta do histórico SQLite e da trava de execução.
 - `google_token_file` (opcional): caminho do token OAuth do Hermes. Por padrão,

@@ -12,6 +12,8 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.message import EmailMessage
 from email.utils import format_datetime, formataddr, make_msgid
+from io import BytesIO
+import base64
 import fcntl
 import hashlib
 from html import escape
@@ -19,9 +21,7 @@ import json
 import os
 from pathlib import Path
 import re
-import smtplib
 import sqlite3
-import ssl
 import sys
 from typing import BinaryIO, Callable
 from zoneinfo import ZoneInfo
@@ -33,6 +33,7 @@ CARDS = {"black": ("Black", 5), "latam": ("Latam", 20)}
 CENT = Decimal("0.01")
 ZERO = Decimal("0.00")
 BLUE = "#2F75B5"
+DEFAULT_SENDER_NAME = "Hermes"
 
 
 class ReportError(Exception):
@@ -50,12 +51,16 @@ class Recipient:
 @dataclass(frozen=True)
 class Settings:
     input_dir: Path
+    input_source: str
+    drive_folder_name: str
     output_dir: Path
     state_dir: Path
-    secrets_file: Path
+    google_token_file: Path
     sender_name: str
     recipients: tuple[Recipient, ...]
     owner_name: str | None = None
+    payment_footer: str | None = None
+    personal_copy_email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,7 @@ class Report:
     purchases: tuple[Purchase, ...]
     payments: tuple[Decimal, ...]
     owner_name: str | None = None
+    payment_footer: str | None = None
 
     @property
     def spending(self) -> Decimal:
@@ -108,6 +114,11 @@ def valid_email(value: str | None) -> bool:
     return len(labels) >= 2 and all(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in labels)
 
 
+def hermes_home() -> Path:
+    configured = os.environ.get("HERMES_HOME")
+    return Path(configured).expanduser() if configured else Path.home() / ".hermes"
+
+
 def load_settings(path: Path) -> Settings:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -136,6 +147,10 @@ def load_settings(path: Path) -> Settings:
             raise ReportError(f"Cadastro duplicado no campo {attr}.")
     if any(r.sheet in ("Black", "Latam") for r in recipients):
         raise ReportError("As abas dos cartões não são destinatários.")
+    input_source = data.get("input_source", "drive")
+    if not isinstance(input_source, str) or input_source not in {"drive", "local"}:
+        raise ReportError("input_source deve ser 'drive' ou 'local'.")
+    drive_folder_name = _clean_string(data.get("drive_folder_name", "Cartão"), "drive_folder_name")
     base = path.resolve().parent
 
     def local_path(key: str, default: str) -> Path:
@@ -145,11 +160,18 @@ def load_settings(path: Path) -> Settings:
     owner_name = data.get("owner_name")
     if owner_name is not None:
         owner_name = _clean_string(owner_name, "owner_name")
+    payment_footer = data.get("payment_footer")
+    if payment_footer is not None:
+        payment_footer = _clean_string(payment_footer, "payment_footer")
+    personal_copy_email = data.get("personal_copy_email")
+    if personal_copy_email is not None and not valid_email(personal_copy_email):
+        raise ReportError("personal_copy_email deve conter um único e-mail válido.")
     return Settings(
-        local_path("input_dir", "."), local_path("output_dir", "outputs"),
-        local_path("state_dir", "var"), local_path("secrets_file", ".env"),
-        _clean_string(data.get("sender_name", "Resumo dos cartões"), "sender_name"),
-        tuple(recipients), owner_name,
+        local_path("input_dir", "inputs"), input_source, drive_folder_name,
+        local_path("output_dir", "outputs"), local_path("state_dir", "var"),
+        local_path("google_token_file", str(hermes_home() / "google_token.json")),
+        _clean_string(data.get("sender_name", DEFAULT_SENDER_NAME), "sender_name"),
+        tuple(recipients), owner_name, payment_footer, personal_copy_email,
     )
 
 
@@ -172,6 +194,8 @@ def scheduled_month(card: str, now: datetime | None = None) -> str:
     local = now.astimezone(ZONE)
     if local.day != CARDS[card][1]:
         raise ReportError("Execução fora do dia previsto. Para recuperar um envio, informe --month AAAA-MM manualmente.")
+    if card == "latam":
+        return local.strftime("%Y-%m")
     return previous_month(local.date())
 
 
@@ -262,7 +286,7 @@ def read_reports(path: Path | BinaryIO, settings: Settings, card: str, month: st
                     description.strip(), "—" if installment is None or installment == 0 else str(installment),
                     _money(row[3].value, f"{source.title}!D{i + 1}"), share,
                 ))
-            reports.append(Report(card, month, recipient, tuple(purchases), tuple(payments), settings.owner_name))
+            reports.append(Report(card, month, recipient, tuple(purchases), tuple(payments), settings.owner_name, settings.payment_footer))
         return reports
     finally:
         workbook.close()
@@ -282,7 +306,7 @@ def greeting_paragraphs(report: Report) -> tuple[str, str, str, str]:
     year, month = report.month.split("-")
     return (
         f"Olá, {report.recipient.sheet}! Tudo bem?",
-        f"Sou o Hermes, assistente pessoal de {owner}. Vou ajudar no envio dos resumos mensais dos cartões compartilhados.",
+        f"Sou o Hermes, assistente pessoal do {owner}. Vou ajudar no envio dos resumos mensais dos cartões compartilhados.",
         f"Segue abaixo o seu resumo, referente a {month}/{year}, com os gastos, pagamentos registrados e saldo atualizado.",
         f"Se tiver alguma dúvida sobre os lançamentos, fale diretamente com {owner}.",
     )
@@ -315,7 +339,8 @@ def render_html(report: Report) -> str:
     rows.append(summary_row("TOTAL", report.spending, True))
     rows.extend(summary_row("PAGAMENTOS", amount) for amount in (report.payments or (ZERO,)))
     rows.append(summary_row("TOTAL GERAL", report.balance, True))
-    status = "Saldo quitado." if report.balance == ZERO else "Crédito a seu favor." if report.balance < ZERO else "Saldo restante a pagar."
+    status = "Saldo quitado." if report.balance == ZERO else "Crédito a seu favor." if report.balance < ZERO else ""
+    status_paragraph = f'<p style="font-size:14px;margin:12px 0 4px;">{status}</p>' if status else ""
     title = f"Cartão {report.card.upper()} {report.month}"
     heads = "".join(
         f'<th scope="col" style="padding:10px 6px;font-size:14px;text-align:{alignment};border-bottom:1px solid #d1d5db;">{label}</th>'
@@ -326,6 +351,10 @@ def render_html(report: Report) -> str:
         f'<p style="font-size:16px;line-height:1.5;margin:8px 0 14px;">{escape(paragraph)}</p>'
         for paragraph in greeting[:3]
     )
+    payment_footer = (
+        f'<p style="font-size:16px;line-height:1.5;margin:14px 0 8px;">{escape(report.payment_footer)}</p>'
+        if report.payment_footer else ""
+    )
     return f'''<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(subject(report))}</title></head>
 <body style="margin:0;padding:12px;background:#ffffff;color:#111111;font-family:Calibri,Arial,sans-serif;">
@@ -334,8 +363,9 @@ def render_html(report: Report) -> str:
 <table width="100%" aria-label="Gastos do cartão" style="width:100%;border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:14px;">
 <thead><tr><th colspan="5" bgcolor="{BLUE}" style="background:{BLUE};color:#111111;text-align:center;padding:12px;font-size:24px;font-weight:bold;">{escape(title)}</th></tr><tr>{heads}</tr></thead>
 <tbody>{''.join(rows)}</tbody></table>
-<p style="font-size:14px;margin:12px 0 4px;">{status} O valor individual está na coluna Rateio.</p>
+{status_paragraph}
 <p style="font-size:16px;line-height:1.5;margin:14px 0 8px;">{escape(greeting[3])}</p>
+{payment_footer}
 </td></tr></table></body></html>'''
 
 
@@ -345,15 +375,19 @@ def render_text(report: Report) -> str:
     lines += [f"{p.date:%d/%m/%Y} | {p.description} | {p.installment} | {brl(p.total)} | {brl(p.share)}" for p in report.purchases]
     lines += ["", "TOTAL: " + brl(report.spending)]
     lines += ["PAGAMENTOS: " + brl(p) for p in (report.payments or (ZERO,))]
-    lines += ["TOTAL GERAL: " + brl(report.balance), "O valor individual está na coluna Rateio."]
+    lines += ["TOTAL GERAL: " + brl(report.balance)]
     lines += ["", greeting[3]]
+    if report.payment_footer:
+        lines += ["", report.payment_footer]
     return "\n".join(lines) + "\n"
 
 
-def make_message(report: Report, sender: str, sender_name: str, target: str, *, test: bool = False, message_id: str | None = None) -> EmailMessage:
+def make_message(report: Report, sender: str, sender_name: str, target: str, *, cc: str | None = None, test: bool = False, message_id: str | None = None) -> EmailMessage:
     message = EmailMessage()
     message["From"] = formataddr((sender_name, sender))
     message["To"] = target
+    if cc and cc.casefold() != target.casefold():
+        message["Cc"] = cc
     message["Subject"] = ("[TESTE] " if test else "") + subject(report)
     message["Date"] = format_datetime(datetime.now(timezone.utc))
     message["Message-ID"] = message_id or make_msgid(domain=sender.split("@")[-1])
@@ -394,30 +428,6 @@ def write_previews(reports: list[Report], output: Path) -> None:
     manifest.write_text(json.dumps(files, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def gmail_credentials(secrets_file: Path) -> tuple[str, str]:
-    # A deliberately small KEY=VALUE parser. Never execute/source the file.
-    values = {}
-    if secrets_file.exists():
-        if secrets_file.stat().st_mode & 0o077:
-            raise ReportError("O arquivo de credenciais deve ter permissão 600 (chmod 600 .env).")
-        for line in secrets_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            key, sep, value = line.partition("=")
-            if not sep or key.strip() not in {"GMAIL_USER", "GMAIL_APP_PASSWORD"}:
-                raise ReportError("Arquivo de credenciais inválido; use apenas GMAIL_USER e GMAIL_APP_PASSWORD.")
-            values[key.strip()] = value.strip().strip('"\'')
-    for key in ("GMAIL_USER", "GMAIL_APP_PASSWORD"):
-        if key in os.environ:
-            values[key] = os.environ[key]
-    user = values.get("GMAIL_USER", "")
-    password = values.get("GMAIL_APP_PASSWORD", "").replace(" ", "")
-    if not valid_email(user) or not re.fullmatch(r"[A-Za-z0-9]{16}", password):
-        raise ReportError("Configure GMAIL_USER e uma senha de app Gmail de 16 caracteres no arquivo de credenciais ou no ambiente.")
-    return user, password
-
-
 @contextmanager
 def run_lock(state_dir: Path):
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -430,6 +440,165 @@ def run_lock(state_dir: Path):
             yield
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+class GmailSendRejected(Exception):
+    """The Gmail API explicitly rejected a message before accepting it."""
+
+
+class GmailAPIConnection:
+    def __init__(self, service):
+        self.service = service
+        try:
+            profile = service.users().getProfile(userId="me").execute(num_retries=0)
+            self.email_address = profile.get("emailAddress", "")
+            if not valid_email(self.email_address):
+                raise ReportError("A conta OAuth do Hermes não retornou um endereço Gmail válido.")
+        except Exception:
+            self.close()
+            raise
+
+    def send_message(self, message: EmailMessage):
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+        try:
+            return self.service.users().messages().send(
+                userId="me", body={"raw": raw}
+            ).execute(num_retries=0)
+        except Exception as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            if isinstance(status, int) and 400 <= status < 500:
+                raise GmailSendRejected("Gmail API recusou a mensagem.") from exc
+            raise
+
+    def close(self):
+        http = getattr(self.service, "_http", None)
+        close = getattr(http, "close", None)
+        if close:
+            close()
+
+
+def _build_gmail_service(token_file: Path):
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    credentials = Credentials.from_authorized_user_file(str(token_file))
+    return build("gmail", "v1", credentials=credentials, cache_discovery=False)
+
+
+def gmail_connect(token_file: Path):
+    """Build a Gmail API client from the existing Hermes OAuth token."""
+    try:
+        return GmailAPIConnection(_build_gmail_service(token_file))
+    except ReportError:
+        raise
+    except Exception as exc:
+        raise ReportError("Não foi possível autenticar pela conta Google do Hermes. Verifique o token OAuth e o escopo gmail.send.") from exc
+
+
+def _build_drive_service(token_file: Path):
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    credentials = Credentials.from_authorized_user_file(str(token_file))
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+
+def _drive_query_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _drive_children(service, parent_id: str, name: str, mime_type: str | None = None) -> list[dict]:
+    query = f"'{parent_id}' in parents and name = '{_drive_query_value(name)}' and trashed = false"
+    if mime_type:
+        query += f" and mimeType = '{mime_type}'"
+    files, page_token = [], None
+    while True:
+        params = {
+            "q": query,
+            "fields": "nextPageToken,files(id,name,mimeType)",
+            "pageSize": 100,
+            "supportsAllDrives": True,
+            "includeItemsFromAllDrives": True,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        response = service.files().list(**params).execute(num_retries=0)
+        files.extend(response.get("files", []))
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            return files
+
+
+def _unique_drive_item(items: list[dict], description: str) -> dict | None:
+    if not items:
+        return None
+    if len(items) > 1:
+        raise ReportError(f"Há mais de um item chamado {description} no Google Drive; deixe apenas um caminho correspondente.")
+    return items[0]
+
+
+def _download_drive_file(service, file_id: str) -> bytes:
+    from googleapiclient.http import MediaIoBaseDownload
+
+    buffer = BytesIO()
+    request = service.files().get_media(fileId=file_id)
+    downloader = MediaIoBaseDownload(buffer, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk(num_retries=0)
+    return buffer.getvalue()
+
+
+def drive_workbook_bytes(settings: Settings, month: str) -> bytes:
+    """Fetch <month>.xlsx from My Drive/<folder>/<year> using Hermes OAuth."""
+    month = validate_month(month)
+    year = month[:4]
+    service = None
+    try:
+        service = _build_drive_service(settings.google_token_file)
+        root_id = service.files().get(fileId="root", fields="id").execute(num_retries=0)["id"]
+        folder = _unique_drive_item(
+            _drive_children(service, root_id, settings.drive_folder_name, "application/vnd.google-apps.folder"),
+            settings.drive_folder_name,
+        )
+        if folder is None:
+            raise ReportError(f"Pasta Drive/{settings.drive_folder_name} não encontrada no Meu Drive.")
+        year_folder = _unique_drive_item(
+            _drive_children(service, folder["id"], year, "application/vnd.google-apps.folder"),
+            f"Drive/{settings.drive_folder_name}/{year}",
+        )
+        if year_folder is None:
+            raise ReportError(f"Pasta Drive/{settings.drive_folder_name}/{year} não encontrada.")
+        filename = f"{month}.xlsx"
+        workbook = _unique_drive_item(
+            _drive_children(service, year_folder["id"], filename),
+            f"Drive/{settings.drive_folder_name}/{year}/{filename}",
+        )
+        if workbook is None:
+            raise ReportError(f"Arquivo {filename} não encontrado em Drive/{settings.drive_folder_name}/{year}.")
+        if workbook.get("mimeType") != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            raise ReportError(f"O arquivo {filename} no Drive não é um Excel .xlsx válido.")
+        return _download_drive_file(service, workbook["id"])
+    except ReportError:
+        raise
+    except Exception as exc:
+        raise ReportError("Falha ao localizar ou baixar a planilha no Google Drive. Verifique a autorização OAuth do Drive e tente novamente.") from exc
+    finally:
+        if service is not None:
+            http = getattr(service, "_http", None)
+            close = getattr(http, "close", None)
+            if close:
+                close()
+
+
+def input_workbook_bytes(settings: Settings, month: str) -> bytes:
+    if settings.input_source == "drive":
+        return drive_workbook_bytes(settings, month)
+    filename = f"{month}.xlsx"
+    try:
+        return (settings.input_dir / filename).read_bytes()
+    except OSError as exc:
+        raise ReportError(f"Arquivo {filename} ausente ou inacessível na pasta local configurada.") from exc
 
 
 class Ledger:
@@ -465,16 +634,6 @@ class Ledger:
         self.db.commit()
 
 
-def smtp_connect(user: str, password: str):
-    connection = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30, context=ssl.create_default_context())
-    try:
-        connection.login(user, password)
-    except BaseException:
-        connection.close()
-        raise
-    return connection
-
-
 def send_reports(reports: list[Report], settings: Settings, source_hash: str, *, test_to: str | None = None, connector: Callable | None = None) -> tuple[int, int]:
     if test_to is not None and not valid_email(test_to):
         raise ReportError("Endereço de teste inválido.")
@@ -483,9 +642,10 @@ def send_reports(reports: list[Report], settings: Settings, source_hash: str, *,
         raise ReportError("Preencha os e-mails antes de enviar: " + ", ".join(missing))
     if not reports:
         return 0, 0
+    if not valid_email(settings.personal_copy_email):
+        raise ReportError("Configure um personal_copy_email válido antes de enviar.")
     if any(not r.owner_name or r.owner_name == "[seu nome]" for r in reports):
         raise ReportError("Preencha owner_name na configuração antes de enviar: é o nome apresentado na saudação do Hermes.")
-    user, password = gmail_credentials(settings.secrets_file)
     with run_lock(settings.state_dir):
         ledger = None if test_to else Ledger(settings.state_dir / "deliveries.sqlite3")
         connection = None
@@ -501,22 +661,22 @@ def send_reports(reports: list[Report], settings: Settings, source_hash: str, *,
                     pending.append(report)
             if not pending:
                 return 0, skipped
-            connection = (connector or smtp_connect)(user, password)
+            connection = (connector or gmail_connect)(settings.google_token_file)
+            sender = connection.email_address
             sent = 0
             for report in pending:
-                message_id = make_msgid(domain=user.split("@")[-1])
-                message = make_message(report, user, settings.sender_name, test_to or report.recipient.email,
+                message_id = make_msgid(domain=sender.split("@")[-1])
+                message = make_message(report, sender, settings.sender_name, test_to or report.recipient.email,
+                                       cc=settings.personal_copy_email,
                                        test=test_to is not None, message_id=message_id)
                 if ledger:
                     ledger.claim(report, message_id, source_hash)
                 try:
-                    refused = connection.send_message(message)
-                    if refused:
-                        raise smtplib.SMTPRecipientsRefused(refused)
-                except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPDataError) as exc:
+                    connection.send_message(message)
+                except GmailSendRejected as exc:
                     if ledger:
                         ledger.finish(report, "failed", type(exc).__name__)
-                    raise ReportError(f"SMTP recusou o envio de {report.recipient.sheet}. Mensagens anteriores permanecem registradas.") from exc
+                    raise ReportError(f"Gmail API recusou o envio para {report.recipient.sheet}. Mensagens anteriores permanecem registradas.") from exc
                 except Exception as exc:
                     if ledger:
                         ledger.finish(report, "unknown", type(exc).__name__)
@@ -557,14 +717,19 @@ def maintain_ledger(settings: Settings, month: str | None, card: str | None, rec
             ledger.close()
 
 
-def notify_owner(settings: Settings | None, config_path: Path, card: str | None,
+def notify_owner(settings: Settings | None, card: str | None,
                  month: str | None, stage: str, reason: str) -> None:
     """One best-effort alert to the authenticated owner; never use recipients."""
-    secrets_file = settings.secrets_file if settings else config_path.resolve().parent / ".env"
-    user, password = gmail_credentials(secrets_file)
+    token_file = settings.google_token_file if settings else hermes_home() / "google_token.json"
+    connection = gmail_connect(token_file)
+    user = connection.email_address
     message = EmailMessage()
-    message["From"] = formataddr(("Hermes — aviso da automação", user))
+    display_name = settings.sender_name if settings else DEFAULT_SENDER_NAME
+    message["From"] = formataddr((display_name, user))
     message["To"] = user
+    copy_email = settings.personal_copy_email if settings else None
+    if copy_email and copy_email.casefold() != user.casefold():
+        message["Cc"] = copy_email
     message["Subject"] = "[ERRO] Resumos dos cartões" + (f" — {card.upper()}" if card else "") + (f" {month}" if month else "")
     message["Date"] = format_datetime(datetime.now(timezone.utc))
     message["Message-ID"] = make_msgid(domain=user.split("@")[-1])
@@ -582,13 +747,10 @@ def notify_owner(settings: Settings | None, config_path: Path, card: str | None,
         f"Etapa: {stage}\n"
         f"Motivo: {reason}\n\n"
         f"{outcome}\n\n"
-        "Este aviso foi enviado somente para você.\n"
+        "Este aviso é destinado ao proprietário.\n"
     )
-    connection = smtp_connect(user, password)
     try:
-        refused = connection.send_message(message)
-        if refused:
-            raise smtplib.SMTPRecipientsRefused(refused)
+        connection.send_message(message)
     finally:
         connection.close()
 
@@ -600,12 +762,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--month", help="AAAA-MM; obrigatório em execução manual")
     parser.add_argument("--recipient", help="Restringir a uma aba pessoal, pelo nome exato")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true", help="Gerar prévias, sem SMTP (padrão)")
+    mode.add_argument("--dry-run", action="store_true", help="Gerar prévias, sem Gmail (padrão)")
     mode.add_argument("--send", action="store_true", help="Enviar mensagens")
     mode.add_argument("--history", action="store_true", help="Consultar o histórico")
     mode.add_argument("--resolve", choices=("sent", "not-sent"), help="Resolver resultado incerto após conferir o Gmail")
     parser.add_argument("--test-to", help="Com --send, redirecionar todos os resumos a um endereço de teste")
-    parser.add_argument("--scheduled", action="store_true", help="Validar dia previsto e selecionar mês anterior")
+    parser.add_argument("--scheduled", action="store_true", help="Validar dia previsto. Black dia 5 = mês anterior; Latam dia 20 = mês atual")
     args = parser.parse_args(argv)
     settings = None
     month = None
@@ -631,17 +793,12 @@ def main(argv: list[str] | None = None) -> int:
             month = args.month
         if args.test_to and not args.send:
             raise ReportError("--test-to exige --send.")
-        stage = "leitura e validação do Excel"
+        stage = "busca e validação da planilha"
         # Snapshot the bytes once so the audit hash and report share the same input.
-        path = settings.input_dir / f"{month}.xlsx"
-        try:
-            from io import BytesIO
-            source_bytes = path.read_bytes()
-        except OSError as exc:
-            raise ReportError(f"Arquivo {path.name} ausente ou inacessível na pasta configurada.") from exc
-        # read_reports accepts a stream as well as a path; preserve the name for diagnostics.
+        source_bytes = input_workbook_bytes(settings, month)
+        # read_reports accepts a stream as well as a path; preserve the expected filename.
         stream = BytesIO(source_bytes)
-        stream.name = path.name
+        stream.name = f"{month}.xlsx"
         reports = read_reports(stream, settings, args.card, month)
         if args.recipient:
             reports = [r for r in reports if r.recipient.sheet == args.recipient]
@@ -651,7 +808,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.send:
             stage = "envio dos resumos"
             count, skipped = send_reports(active, settings, hashlib.sha256(source_bytes).hexdigest(), test_to=args.test_to)
-            print(f"{args.card.upper()} {month}: {count} mensagens {'de teste ' if args.test_to else ''}aceitas pelo SMTP; {skipped} já enviadas; {len(reports) - len(active)} sem movimento.")
+            print(f"{args.card.upper()} {month}: {count} mensagens {'de teste ' if args.test_to else ''}aceitas pela API do Gmail; {skipped} já enviadas; {len(reports) - len(active)} sem movimento.")
         else:
             folder = settings.output_dir / month / args.card
             write_previews(active, folder)
@@ -659,17 +816,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:
         # Only our controlled diagnostics may include details. Raw exceptions
-        # can contain cell values, SMTP addresses or credential server output.
+        # can contain cell values, Gmail addresses or credential server output.
         reason = str(exc) if isinstance(exc, ReportError) else f"Falha operacional ({type(exc).__name__}). Verifique Gmail, permissões e acesso aos arquivos e ao histórico."
         print(f"Erro: {reason}", file=sys.stderr)
         if args.send:
             try:
-                notify_owner(settings, args.config, args.card, month, stage, reason)
+                notify_owner(settings, args.card, month, stage, reason)
             except Exception as alert_error:
                 # Never retry recursively, notify friends or mask the failure.
                 print(f"Não foi possível confirmar o aviso ao proprietário ({type(alert_error).__name__}). Confira o Gmail e os logs do Hermes.", file=sys.stderr)
             else:
-                print("Aviso de falha aceito pelo Gmail, somente para o proprietário.", file=sys.stderr)
+                print("Aviso de falha aceito pelo Gmail para o proprietário (Cc pessoal, se configurado).", file=sys.stderr)
         return 1
 
 

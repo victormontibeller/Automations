@@ -22,6 +22,15 @@ class SharedAdapterTests(unittest.TestCase):
         self.settings = Settings(root, "drive", "Cartão", root / "output", root / "state", root / "fake.json", "Synthetic", (), "Synthetic Owner", personal_copy_email="copy@example.com")
         self.report = Report("black", "2026-09", Recipient("Pessoa01", "Participante01", "person@example.com"), (), (), "Synthetic Owner")
 
+    def test_invalid_card_is_rejected_before_workbook_access(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from resumos_cartoes import service
+        with patch.object(service.config, "load_settings", return_value=self.settings), \
+                patch.object(service, "input_workbook_bytes") as read, redirect_stderr(StringIO()):
+            self.assertEqual(service.run(Path("synthetic.json"), card="unknown", requested_month="2026-09"), 1)
+        read.assert_not_called()
+
     def test_app_adapters_delegate_to_shared_integrations(self):
         root = Path(__file__).resolve().parents[1] / "src/resumos_cartoes"
         for name in ("gmail", "drive"):
@@ -46,6 +55,26 @@ class SharedAdapterTests(unittest.TestCase):
         with sqlite3.connect(self.settings.state_dir / "deliveries.sqlite3") as db:
             self.assertEqual(db.execute("SELECT status FROM deliveries").fetchall(), [("unknown",)])
         db.close()
+
+    def test_local_invalid_message_keeps_existing_conservative_unknown_policy(self):
+        from email.message import EmailMessage
+        service = MagicMock()
+        service.users.return_value.getProfile.return_value.execute.return_value = {"emailAddress": "owner@example.com"}
+        invalid = EmailMessage()
+        invalid["From"] = "owner@example.com"
+        invalid["To"] = "not-a-mailbox"
+        invalid.set_content("Synthetic")
+        with patch("automation_core.google_auth.build_service", return_value=service), patch.object(delivery, "make_message", return_value=invalid):
+            with self.assertRaisesRegex(ReportError, "incerto"):
+                delivery.send_reports([self.report], self.settings, "hash")
+        service.users.return_value.messages.return_value.send.assert_not_called()
+        with sqlite3.connect(self.settings.state_dir / "deliveries.sqlite3") as db:
+            self.assertEqual(db.execute("SELECT status FROM deliveries").fetchall(), [("unknown",)])
+        db.close()
+        with patch("automation_core.google_auth.build_service") as connect:
+            with self.assertRaisesRegex(ReportError, "incerto"):
+                delivery.send_reports([self.report], self.settings, "hash")
+        connect.assert_not_called()
 
     def test_close_failure_does_not_hide_acceptance_or_skip_ledger_close(self):
         connection = MagicMock()

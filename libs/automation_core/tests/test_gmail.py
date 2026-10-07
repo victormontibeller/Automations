@@ -82,6 +82,16 @@ class GmailTests(unittest.TestCase):
         service.users.return_value.messages.return_value.send.return_value.execute.return_value = {"id": "ack"}
         self.assertEqual(gmail.GmailClient(service).send_message(message()), gmail.SendResult("ack"))
 
+    def test_optional_thread_id_cannot_invalidate_an_acknowledged_send(self):
+        from automation_core.gmail import GmailClient, SendResult
+        for thread_id in (None, "", "  ", 7, [], {}, False):
+            with self.subTest(thread_id=thread_id):
+                service = fake_service()
+                service.users.return_value.messages.return_value.send.return_value.execute.return_value = {
+                    "id": "ack", "threadId": thread_id,
+                }
+                self.assertEqual(GmailClient(service).send_message(message()), SendResult("ack"))
+
     def test_profile_failure_and_close_failure_never_leak_or_mask_outcomes(self):
         from automation_core import gmail
         self.assertTrue(hasattr(gmail, "GmailProfileError"), "Profile errors need a safe diagnostic")

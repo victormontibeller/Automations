@@ -80,6 +80,20 @@ library into each application's own environment, not sharing a virtualenv or
 changing `sys.path`. Regular installs must be reinstalled after source edits.
 Development installations do not update production launchers or scheduled jobs.
 
+Use a clean development checkout and a separate virtualenv; never develop against
+an editable production installation. Default tests use synthetic data only.
+Private-workbook validation requires explicit `CARTOES_TEST_PRIVATE_WORKBOOK=1`.
+
+CI builds and installs both wheels in a fresh environment, runs `pip check`, then
+runs both suites outside the checkout on Linux/Python 3.11 and 3.12 and
+macOS/Python 3.12. A single editable job checks imports, entry points and a synthetic
+preview. Network access is blocked during these CI tests by the small test-only
+`tests/offline/sitecustomize.py`; dependencies are installed before the guard.
+Do not install this guard into a runtime environment. There is no custom snapshot
+or verification framework, and ordinary local test commands are not a sandbox.
+The CLI's existing summaries and error messages are sufficient for this personal
+automation; advanced telemetry is deliberately deferred.
+
 ## Adicionar outra automação
 
 1. Crie `<nome>/`, com um nome curto e descritivo.

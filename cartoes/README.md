@@ -299,9 +299,9 @@ A amostra fictícia versionada em `tests/fixtures/anonymous_reports.json` cobre
 quitação, créditos, parcelas antigas e participantes sem movimento. Ela permite
 validar **11 mensagens Black e 3 Latam** em um clone sem arquivos pessoais.
 
-O teste com uma planilha real é opcional e somente local: se houver um arquivo
-privado `inputs/2026-09.xlsx` no clone, a suíte compara os **24 blocos** com os dados
-salvos. Esse teste usa esse caminho local independentemente do `input_source` da
+The private-workbook test is opt-in: set `CARTOES_TEST_PRIVATE_WORKBOOK=1`
+and provide `inputs/2026-09.xlsx` locally to compare the **24 blocks**. Default
+runs use synthetic data even if a private workbook happens to exist. Esse teste usa esse caminho local independentemente do `input_source` da
 configuração de produção. A planilha pessoal não é incluída no Git. Os testes
 cobrem rateios, pagamentos, créditos, ausência de movimento, validações,
 formatação, virada do ano, fuso, repetição, falhas parciais, falhas após aceite da API do Gmail,
@@ -340,20 +340,17 @@ Se esta automação já estava instalada na raiz do repositório ou em
 
 A reorganização local não altera uma instalação já existente no servidor.
 
-### Package development and shared integrations (stages 1–2)
+### Development and module responsibilities
 
 The implementation lives in `src/resumos_cartoes/`. Install the project before
 running it; no entry point changes `sys.path` or relies on the current directory
 for imports. The source `cartoes.py` is only a CLI shim. The installed `cartoes`
 compatibility module exports `main` for the existing Hermes launchers.
 
-```bash
-# From cartoes/, using this checkout's independent virtual environment:
-.venv/bin/python -m pip install ../libs/automation_core .
-.venv/bin/python -m pip check
-.venv/bin/python -m unittest discover -s tests -v
+Use the [repository development commands](../README.md#shared-integrations)
+for installation and tests. All three entry points use the same parser:
 
-# All three entry points use the same parser and execution policy:
+```bash
 .venv/bin/python cartoes.py --help
 .venv/bin/cartoes --help
 .venv/bin/python -m resumos_cartoes --help
@@ -392,31 +389,12 @@ golden changes require review, not automatic regeneration. The original
 regression suite remains in `test_cartoes.py`; MIME envelope contracts have a
 focused test file as well.
 
-The reusable integrations now live in `../libs/automation_core/src/automation_core`:
+See the [shared library guide](../libs/automation_core/README.md) for Google client
+APIs and reuse examples. The application owns recipient rules, billing periods,
+file conventions and the delivery ledger; the library owns transport only.
 
-- `google_auth.build_service(api, version, token_file)` reads only the explicit
-  token path. Hermes fallback paths remain in cards configuration/owner alerts.
-- `GmailClient` transports the caller's `EmailMessage` without selecting recipients.
-  Cards still owns required personal Cc, case-insensitive To/Cc deduplication and
-  no Bcc. `SendResult.message_id` is the provider ID, not the RFC `Message-ID`.
-- `DriveClient` handles root lookup, exact-parent/name pagination and byte download.
-  Cards still owns `Cartão/<year>/<month>.xlsx`, Excel MIME validation and no fallback.
-
-The shared library never imports this application. Errors are translated at the
-application boundary; provider payloads are not printed. Gmail 4xx rejections stay
-`failed`; network/5xx failures and missing acknowledgements stay `unknown`. No send
-is automatically retried. Best-effort transport cleanup cannot invalidate an
-accepted send or prevent the application from closing its ledger.
-
-Run both suites after installing both packages:
-
-```bash
-.venv/bin/python -m unittest discover -s ../libs/automation_core/tests -v
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-The shared suite uses fake services and non-card release-notice/SVG examples.
-CI includes `libs/**` changes and runs both suites. Golden outputs, financial
-calculations, schedules, launcher arguments, configuration/history paths and the
-SQLite schema are unchanged. Structured logging/run results and broader quality
-gates belong to stage 3, not this extraction.
+The CLI keeps its human-readable summary and integer exit status. Structured
+run results and JSON logging are deferred until a real consumer needs them.
+Gmail/Drive, financial and delivery regressions remain covered by fake services
+and synthetic workbooks. No send is automatically retried after an uncertain
+outcome. The SQLite schema and production deployment are unchanged.

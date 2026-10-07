@@ -16,6 +16,8 @@ de execução independentes.
 Automations/
 ├── README.md
 ├── .gitignore
+├── libs/
+│   └── automation_core/  # installable, application-independent Google clients
 └── cartoes/
     ├── README.md
     ├── pyproject.toml
@@ -42,7 +44,7 @@ A partir da raiz:
 ```bash
 cd cartoes
 python3 -m venv .venv
-.venv/bin/python -m pip install .
+.venv/bin/python -m pip install ../libs/automation_core .
 cp config.example.json config.json
 # configure owner_name, recipients, personal_copy_email and payment_footer in config.json
 .venv/bin/python cartoes.py --config config.json --card black --month 2026-09
@@ -55,6 +57,28 @@ solicitado. Para desenvolvimento local, configure `input_source: "local"` e
 `input_dir`. Para configurar contatos, Gmail e agendamentos, siga o
 [guia dos cartões](cartoes/README.md). A planilha pessoal não acompanha
 um clone do repositório.
+
+## Shared integrations
+
+`libs/automation_core/` is the installable `automation-core` package. It provides
+explicit-path Google authentication, caller-composed Gmail transport, and exact
+Drive lookups/downloads. It does not depend on cards, Excel, Hermes, schedules,
+recipient policy or the delivery ledger. See its [API and test guide](libs/automation_core/README.md).
+
+The shared package is **local to this repository, not published on PyPI**. From
+`cartoes/`, install both local packages together:
+
+```bash
+.venv/bin/python -m pip install ../libs/automation_core .
+.venv/bin/python -m pip check
+.venv/bin/python -m unittest discover -s ../libs/automation_core/tests -v
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+Keep a separate `.venv/` per automation. Reuse means installing the same shared
+library into each application's own environment, not sharing a virtualenv or
+changing `sys.path`. Regular installs must be reinstalled after source edits.
+Development installations do not update production launchers or scheduled jobs.
 
 ## Adicionar outra automação
 

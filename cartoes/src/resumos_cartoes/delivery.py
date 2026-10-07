@@ -83,7 +83,13 @@ def send_reports(reports: list[Report], settings: Settings, source_hash: str, *,
                 sent += 1
             return sent, skipped
         finally:
-            if connection is not None:
-                connection.close()  # QUIT failures must not invalidate accepted mail.
-            if ledger:
-                ledger.close()
+            try:
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except Exception:
+                        # Cleanup must not invalidate acceptance or invite a resend.
+                        pass
+            finally:
+                if ledger:
+                    ledger.close()

@@ -7,7 +7,7 @@ name = "resumos-cartoes"
 version = "1.0.0"
 description = "Resumos individuais de cartões para envio mensal pelo Hermes"
 requires-python = ">=3.11"
-dependencies = ["openpyxl==3.1.5", "google-api-python-client>=2.150.0"]
+dependencies = ["openpyxl==3.1.5", "automation-core==0.1.0"]
 
 [project.scripts]
 cartoes = "resumos_cartoes.cli:main"

@@ -1,7 +1,7 @@
 # Resumos individuais dos cartões
 
-Esta automação fica em `automations/cartoes/`. Execute os comandos deste guia
-dentro dessa pasta. Consulte o [catálogo do repositório](../../README.md) para
+Esta automação fica em `cartoes/`. Execute os comandos deste guia
+dentro dessa pasta. Consulte o [catálogo do repositório](../README.md) para
 ver a organização das demais automações.
 
 O script `cartoes.py` lê o Excel mensal e gera e-mails semelhantes às abas pessoais:
@@ -27,7 +27,7 @@ No servidor, use o repositório em `~/Projetos/Automations`. Prepare um ambiente
 Python exclusivo desta automação:
 
 ```bash
-cd ~/Projetos/Automations/automations/cartoes
+cd ~/Projetos/Automations/cartoes
 python3 -m venv .venv
 .venv/bin/python -m pip install .
 cp config.example.json config.json
@@ -168,7 +168,7 @@ cp hermes/cartao_black.py ~/.hermes/scripts/cartao_black.py
 cp hermes/cartao_latam.py ~/.hermes/scripts/cartao_latam.py
 ```
 
-Os lançadores usam `~/Projetos/Automations/automations/cartoes/config.json`. Se o projeto ficar em outro
+Os lançadores usam `~/Projetos/Automations/cartoes/config.json`. Se o projeto ficar em outro
 local, edite o caminho padrão nos dois arquivos copiados. Também é possível
 definir `CARTOES_CONFIG` no ambiente do gateway. Eles importam o módulo `cartoes`
 instalado no ambiente Python próprio, sem depender do diretório corrente.
@@ -187,8 +187,8 @@ hermes gateway restart
 Crie os agendamentos inicialmente pausados, com saída operacional local:
 
 ```bash
-hermes cron create "0 9 5 * *" --no-agent --script cartao_black.py --interpreter "$HOME/Projetos/Automations/automations/cartoes/.venv/bin/python" --deliver local --name "Resumo cartão Black" --paused
-hermes cron create "0 9 20 * *" --no-agent --script cartao_latam.py --interpreter "$HOME/Projetos/Automations/automations/cartoes/.venv/bin/python" --deliver local --name "Resumo cartão Latam" --paused
+hermes cron create "0 9 5 * *" --no-agent --script cartao_black.py --interpreter "$HOME/Projetos/Automations/cartoes/.venv/bin/python" --deliver local --name "Resumo cartão Black" --paused
+hermes cron create "0 9 20 * *" --no-agent --script cartao_latam.py --interpreter "$HOME/Projetos/Automations/cartoes/.venv/bin/python" --deliver local --name "Resumo cartão Latam" --paused
 hermes cron list
 hermes cron status
 ```
@@ -308,7 +308,7 @@ formatação, virada do ano, fuso, repetição, falhas parciais, falhas após ac
 trava entre processos, avisos de falha ao proprietário e Excel corrompido na
 abertura ou durante a leitura das células.
 
-O [workflow de testes](../../.github/workflows/tests.yml) executa a suíte em pushes
+O [workflow de testes](../.github/workflows/tests.yml) executa a suíte em pushes
 e pull requests que alterem esta automação, usando Linux com Python 3.11 e 3.12
 e macOS com Python 3.12. Os testes usam credenciais fictícias e dispensam secrets
 do GitHub. Também é possível iniciar o workflow manualmente.
@@ -330,7 +330,9 @@ Se esta automação já estava instalada na raiz do repositório ou em
 - Preserve a pasta de histórico indicada por `state_dir`, incluindo
   `deliveries.sqlite3`, para manter a proteção contra envios repetidos. Se mover
   `var/`, faça isso com os processos de envio parados.
-- Crie a `.venv` no novo local e instale o pacote conforme a etapa 1.
+- Crie a `.venv` no novo local e instale o pacote conforme a etapa 1. Não reutilize
+  uma `.venv` apenas movida: os scripts de ativação, executáveis e instalações
+  editáveis podem continuar apontando para o caminho anterior.
 - Copie novamente os lançadores para `~/.hermes/scripts/`, confira
   `CARTOES_CONFIG` se estiver definido e ajuste o caminho do interpretador dos
   agendamentos existentes para a nova `.venv`. Mantenha apenas um agendamento

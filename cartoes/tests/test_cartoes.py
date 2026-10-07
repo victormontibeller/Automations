@@ -471,7 +471,7 @@ class ReportTests(unittest.TestCase):
     def test_hermes_launchers_use_config_and_scheduled_production_mode(self):
         root = Path(__file__).resolve().parents[1]
         for card in ("black", "latam"):
-            default = Path("~/Projetos/Automations/automations/cartoes/config.json").expanduser()
+            default = Path("~/Projetos/Automations/cartoes/config.json").expanduser()
             for configured, expected in ((None, default), (str(self.config), self.config)):
                 with self.subTest(card=card, configured=configured), patch.dict(app.os.environ), patch.object(app, "main", return_value=0) as main:
                     app.os.environ.pop("CARTOES_CONFIG", None)

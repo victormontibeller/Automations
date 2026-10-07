@@ -36,6 +36,8 @@ def run(config_path: Path, *, card: str | None = None,
     stage = "configuração"
     try:
         settings = config.load_settings(config_path)
+        if card is not None and card not in scheduling.CARDS:
+            raise ReportError("Informe --card black ou --card latam.")
         if requested_month:
             month = scheduling.validate_month(requested_month)
         if history or resolve:

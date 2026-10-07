@@ -817,7 +817,9 @@ class ProvidedWorkbookTests(unittest.TestCase):
     """Optional private fixture: never committed, included in local validation."""
     root = Path(__file__).resolve().parents[1]
 
-    @unittest.skipUnless((root / "inputs/2026-09.xlsx").exists(), "Exemplo pessoal não está no checkout")
+    @unittest.skipUnless(os.environ.get("CARTOES_TEST_PRIVATE_WORKBOOK") == "1" and
+                         (root / "inputs/2026-09.xlsx").exists(),
+                         "Private workbook test requires explicit opt-in and a local fixture")
     def test_all_24_blocks_match_independent_cached_personal_summaries(self):
         settings = configuration.load_settings(self.root / "config.example.json")
         wb = openpyxl.load_workbook(self.root / "inputs/2026-09.xlsx", data_only=True)

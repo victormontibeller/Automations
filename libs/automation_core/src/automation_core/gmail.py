@@ -75,7 +75,10 @@ class GmailClient:
             raise GmailSendUncertain("Gmail acceptance is unknown; do not resend without reconciliation.") from exc
         if not isinstance(response, dict) or not isinstance(response.get("id"), str) or not response["id"].strip():
             raise GmailSendUncertain("Gmail did not return a message acknowledgement; acceptance is unknown.")
-        return SendResult(response["id"], response.get("threadId"))
+        thread_id = response.get("threadId")
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            thread_id = None
+        return SendResult(response["id"], thread_id)
 
     def close(self) -> None:
         # Best effort: cleanup must never turn accepted mail into a retry signal.

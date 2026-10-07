@@ -1,38 +1,30 @@
-name: Testes das automações
+name: Automation tests
 
 on:
   push:
-    paths:
-      - "cartoes/**"
-      - "libs/**"
-      - ".github/workflows/tests.yml"
+    paths: ["cartoes/**", "libs/**", "tests/**", ".github/workflows/tests.yml"]
   pull_request:
-    paths:
-      - "cartoes/**"
-      - "libs/**"
-      - ".github/workflows/tests.yml"
+    paths: ["cartoes/**", "libs/**", "tests/**", ".github/workflows/tests.yml"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  cartoes:
-    name: Cartões / ${{ matrix.os }} / Python ${{ matrix.python }}
+  tests:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }} / ${{ matrix.install }}
     runs-on: ${{ matrix.os }}
+    env:
+      HERMES_HOME: ${{ runner.temp }}/no-credentials
+      CARTOES_TEST_PRIVATE_WORKBOOK: "0"
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            python: "3.11"
-          - os: ubuntu-latest
-            python: "3.12"
-          - os: macos-latest
-            python: "3.12"
-    defaults:
-      run:
-        working-directory: cartoes
+          - {os: ubuntu-latest, python: "3.11", install: wheel}
+          - {os: ubuntu-latest, python: "3.12", install: wheel}
+          - {os: macos-latest, python: "3.12", install: wheel}
+          - {os: ubuntu-latest, python: "3.12", install: editable}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,11 +34,32 @@ jobs:
           cache-dependency-path: |
             cartoes/pyproject.toml
             libs/automation_core/pyproject.toml
-      - name: Install local shared library and automation
-        run: python -m pip install ../libs/automation_core .
-      - name: Check installed dependencies
-        run: python -m pip check
-      - name: Run shared integration tests (fake Google APIs)
-        run: python -m unittest discover -s ../libs/automation_core/tests -v
-      - name: Run regression and installed-package tests (mocked Google APIs)
-        run: python -m unittest discover -s tests -v
+      - name: Create disposable environment
+        run: python -m venv "$RUNNER_TEMP/test-venv"
+      - name: Build and install both wheels
+        if: matrix.install == 'wheel'
+        run: |
+          python -m pip wheel --no-deps --wheel-dir "$RUNNER_TEMP/wheels" ./libs/automation_core ./cartoes
+          "$RUNNER_TEMP/test-venv/bin/python" -m pip install "$RUNNER_TEMP"/wheels/*.whl
+      - name: Install editable packages
+        if: matrix.install == 'editable'
+        run: '"$RUNNER_TEMP/test-venv/bin/python" -m pip install -e ./libs/automation_core -e ./cartoes'
+      - name: Check dependencies and block network for tests
+        run: |
+          PY="$RUNNER_TEMP/test-venv/bin/python"
+          "$PY" -m pip check
+          cp tests/offline/sitecustomize.py "$("$PY" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/sitecustomize.py"
+      - name: Run all synthetic suites outside checkout
+        if: matrix.install == 'wheel'
+        working-directory: ${{ runner.temp }}
+        run: |
+          PY="$RUNNER_TEMP/test-venv/bin/python"
+          "$PY" -I -m unittest discover -s "$GITHUB_WORKSPACE/libs/automation_core/tests" -v
+          "$PY" -I -m unittest discover -s "$GITHUB_WORKSPACE/cartoes/tests" -v
+      - name: Smoke-test editable imports, CLI and synthetic preview
+        if: matrix.install == 'editable'
+        working-directory: ${{ runner.temp }}
+        run: |
+          PY="$RUNNER_TEMP/test-venv/bin/python"
+          "$PY" -I -m unittest discover -s "$GITHUB_WORKSPACE/cartoes/tests" -p test_package.py -v
+          "$PY" -I -m unittest discover -s "$GITHUB_WORKSPACE/cartoes/tests" -p test_safety.py -v

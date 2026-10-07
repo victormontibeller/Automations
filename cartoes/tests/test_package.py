@@ -100,6 +100,21 @@ assert callable(main)
         result = self.run_outside_checkout([sys.executable, "-I", "-c", code])
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_installed_packages_use_wheel_or_declared_editable_sources(self):
+        code = '''
+import importlib.metadata as metadata
+import json
+from pathlib import Path
+import sys
+import automation_core, resumos_cartoes
+for name, module in (('automation-core', automation_core), ('resumos-cartoes', resumos_cartoes)):
+    direct = json.loads(metadata.distribution(name).read_text('direct_url.json'))
+    if not direct.get('dir_info', {}).get('editable'):
+        assert Path(module.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()), module.__file__
+'''
+        result = self.run_outside_checkout([sys.executable, "-I", "-c", code])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_installed_preview_uses_synthetic_local_input(self):
         # Exercise the installed CLI end to end, not just argparse's help path.
         import openpyxl

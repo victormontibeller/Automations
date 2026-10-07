@@ -7,6 +7,7 @@ from email.parser import BytesParser
 from io import StringIO
 import base64
 import json
+import os
 from pathlib import Path
 import re
 import runpy
@@ -20,7 +21,12 @@ from zipfile import ZipFile
 
 import openpyxl
 
-import cartoes as app
+import cartoes as legacy_cli
+from resumos_cartoes import (
+    cli, config as configuration, delivery as deliveries, drive, errors,
+    gmail as gmail_api, ledger as history, locking, models, previews,
+    rendering, scheduling, workbook as workbooks,
+)
 
 
 class FakeGmail:
@@ -62,7 +68,7 @@ class ReportTests(unittest.TestCase):
                 {"sheet": "Pessoa02", "participant": "Participante02", "email": "pessoa02@example.com"},
             ]
         }))
-        self.settings = app.load_settings(self.config)
+        self.settings = configuration.load_settings(self.config)
         self.path = self.root / "2026-09.xlsx"
         self.make_workbook()
 
@@ -99,7 +105,7 @@ class ReportTests(unittest.TestCase):
         b.close()
 
     def reports(self):
-        return app.read_reports(self.path, self.settings, "black", "2026-09")
+        return workbooks.read_reports(self.path, self.settings, "black", "2026-09")
 
     def test_shared_purchases_credits_payments_and_old_installments(self):
         before = self.path.read_bytes()
@@ -124,60 +130,60 @@ class ReportTests(unittest.TestCase):
         report = self.reports()[0]
         self.assertTrue(report.has_movement)
         self.assertEqual(report.balance, Decimal("-7.65"))
-        self.assertIn("Crédito a seu favor", app.render_html(report))
+        self.assertIn("Crédito a seu favor", rendering.render_html(report))
 
     def test_no_payments_renders_zero_without_creating_movement(self):
         self.change(lambda b: [setattr(b["Black"][f"F{r}"], "value", None) for r in (12, 13)])
         report = self.reports()[0]
         self.assertEqual(report.payments, ())
         self.assertEqual(report.balance, report.spending)
-        html = app.render_html(report)
+        html = rendering.render_html(report)
         self.assertRegex(html, r"PAGAMENTOS</td><td[^>]*></td><td[^>]*>R\$ 0,00</td>")
-        self.assertIn("PAGAMENTOS: R$ 0,00", app.render_text(report))
+        self.assertIn("PAGAMENTOS: R$ 0,00", rendering.render_text(report))
         self.change(lambda b: [setattr(b["Black"][f"F{r}"], "value", None) for r in (6, 7, 9)])
         self.assertFalse(self.reports()[0].has_movement)
 
     def test_numeric_rounding_and_bad_values(self):
-        self.assertEqual(app._money(0.1 + 0.2, "F6"), Decimal("0.30"))
-        self.assertEqual(app._money(1.005, "F6"), Decimal("1.01"))
+        self.assertEqual(workbooks._money(0.1 + 0.2, "F6"), Decimal("0.30"))
+        self.assertEqual(workbooks._money(1.005, "F6"), Decimal("1.01"))
         for value in ("10", "=SUM(A1:A3)", True, float("nan"), float("inf")):
-            with self.subTest(value=str(value)), self.assertRaises(app.ReportError):
-                app._money(value, "F6")
+            with self.subTest(value=str(value)), self.assertRaises(errors.ReportError):
+                workbooks._money(value, "F6")
 
     def test_formula_in_source_is_rejected(self):
         self.change(lambda b: setattr(b["Black"]["F6"], "value", "=10"))
-        with self.assertRaisesRegex(app.ReportError, "Black!F6"):
+        with self.assertRaisesRegex(errors.ReportError, "Black!F6"):
             self.reports()
 
     def test_invalid_date_and_purchase_total(self):
         self.change(lambda b: setattr(b["Black"]["A6"], "value", None))
-        with self.assertRaisesRegex(app.ReportError, "data"):
+        with self.assertRaisesRegex(errors.ReportError, "data"):
             self.reports()
         self.make_workbook()
         self.change(lambda b: setattr(b["Black"]["D6"], "value", None))
-        with self.assertRaisesRegex(app.ReportError, "Black!D6"):
+        with self.assertRaisesRegex(errors.ReportError, "Black!D6"):
             self.reports()
 
     def test_unknown_or_missing_sheets_and_headers_fail(self):
         self.change(lambda b: b.create_sheet("Novo amigo"))
-        with self.assertRaisesRegex(app.ReportError, "sem cadastro"):
+        with self.assertRaisesRegex(errors.ReportError, "sem cadastro"):
             self.reports()
         self.make_workbook()
         self.change(lambda b: b.remove(b["Pessoa02"]))
-        with self.assertRaisesRegex(app.ReportError, "ausentes"):
+        with self.assertRaisesRegex(errors.ReportError, "ausentes"):
             self.reports()
         self.make_workbook()
         self.change(lambda b: setattr(b["Black"]["G2"], "value", "Outro"))
-        with self.assertRaisesRegex(app.ReportError, "Pessoa02"):
+        with self.assertRaisesRegex(errors.ReportError, "Pessoa02"):
             self.reports()
 
     def test_duplicate_headers_and_bad_footer_fail(self):
         self.change(lambda b: setattr(b["Black"]["G2"], "value", "Participante01"))
-        with self.assertRaisesRegex(app.ReportError, "duplicado"):
+        with self.assertRaisesRegex(errors.ReportError, "duplicado"):
             self.reports()
         self.make_workbook()
         self.change(lambda b: setattr(b["Black"]["A15"], "value", "Saldo"))
-        with self.assertRaisesRegex(app.ReportError, "TOTAL GERAL"):
+        with self.assertRaisesRegex(errors.ReportError, "TOTAL GERAL"):
             self.reports()
 
     def test_header_columns_can_move(self):
@@ -186,10 +192,10 @@ class ReportTests(unittest.TestCase):
 
     def test_html_escapes_content_and_keeps_five_columns(self):
         report = self.reports()[0]
-        html = app.render_html(report)
+        html = rendering.render_html(report)
         self.assertNotIn("<script>", html)
         self.assertIn("&lt;script&gt; &amp;", html)
-        self.assertIn(app.BLUE, html)
+        self.assertIn(rendering.BLUE, html)
         for label in ("Data", "Lançamento", "Parcelas", "Total", "Rateio", "TOTAL GERAL"):
             self.assertIn(label, html)
         self.assertIn("03/01/2025", html)
@@ -199,7 +205,7 @@ class ReportTests(unittest.TestCase):
 
     def test_multipart_message_is_individual(self):
         report = self.reports()[0]
-        msg = app.make_message(report, "owner@gmail.com", self.settings.sender_name, "pessoa01@example.com", cc=self.settings.personal_copy_email)
+        msg = deliveries.make_message(report, "owner@gmail.com", self.settings.sender_name, "pessoa01@example.com", cc=self.settings.personal_copy_email)
         self.assertEqual(msg["From"], "Hermes de teste <owner@gmail.com>")
         self.assertEqual(msg["Cc"], "copy@example.com")
         self.assertIsNone(msg["Bcc"])
@@ -223,9 +229,9 @@ class ReportTests(unittest.TestCase):
     def test_missing_owner_name_allows_preview_but_blocks_send(self):
         from dataclasses import replace
         report = replace(self.reports()[0], owner_name=None)
-        self.assertIn("assistente pessoal do [seu nome]", app.render_html(report))
-        with self.assertRaisesRegex(app.ReportError, "owner_name"):
-            app.send_reports([report], self.settings, "hash", connector=lambda *_: self.fail("must not connect"))
+        self.assertIn("assistente pessoal do [seu nome]", rendering.render_html(report))
+        with self.assertRaisesRegex(errors.ReportError, "owner_name"):
+            deliveries.send_reports([report], self.settings, "hash", connector=lambda *_: self.fail("must not connect"))
         self.assertFalse(self.settings.state_dir.exists())
 
     def test_config_defaults_to_drive_cartoes_and_year_folder(self):
@@ -233,7 +239,7 @@ class ReportTests(unittest.TestCase):
         data.pop("input_source")
         data.pop("drive_folder_name", None)
         self.config.write_text(json.dumps(data))
-        settings = app.load_settings(self.config)
+        settings = configuration.load_settings(self.config)
         self.assertEqual(settings.input_source, "drive")
         self.assertEqual(settings.drive_folder_name, "Cartão")
 
@@ -242,7 +248,7 @@ class ReportTests(unittest.TestCase):
         data["input_source"] = "drive"
         data["drive_folder_name"] = "Cartão"
         self.config.write_text(json.dumps(data))
-        settings = app.load_settings(self.config)
+        settings = configuration.load_settings(self.config)
         service = MagicMock()
         service.files.return_value.get.return_value.execute.return_value = {"id": "my-drive-root"}
         service.files.return_value.list.return_value.execute.side_effect = [
@@ -250,8 +256,8 @@ class ReportTests(unittest.TestCase):
             {"files": [{"id": "year-folder", "name": "2026", "mimeType": "application/vnd.google-apps.folder"}]},
             {"files": [{"id": "month-file", "name": "2026-09.xlsx", "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}]},
         ]
-        with patch.object(app, "_build_drive_service", return_value=service), patch.object(app, "_download_drive_file", return_value=b"xlsx-bytes") as download:
-            content = app.drive_workbook_bytes(settings, "2026-09")
+        with patch.object(drive, "_build_drive_service", return_value=service), patch.object(drive, "_download_drive_file", return_value=b"xlsx-bytes") as download:
+            content = drive.drive_workbook_bytes(settings, "2026-09")
         self.assertEqual(content, b"xlsx-bytes")
         download.assert_called_once_with(service, "month-file")
         queries = [call.kwargs["q"] for call in service.files.return_value.list.call_args_list]
@@ -279,7 +285,7 @@ class ReportTests(unittest.TestCase):
 
         service = MagicMock()
         with patch("googleapiclient.http.MediaIoBaseDownload", FakeDownloader):
-            content = app._download_drive_file(service, "excel-id")
+            content = drive._download_drive_file(service, "excel-id")
         self.assertEqual(content, b"xlsx-bytes")
         self.assertEqual(retry_counts, [0])
         service.files.return_value.get_media.assert_called_once_with(fileId="excel-id")
@@ -288,7 +294,7 @@ class ReportTests(unittest.TestCase):
         data = json.loads(self.config.read_text())
         data["input_source"] = "drive"
         self.config.write_text(json.dumps(data))
-        settings = app.load_settings(self.config)
+        settings = configuration.load_settings(self.config)
         service = MagicMock()
         service.files.return_value.get.return_value.execute.return_value = {"id": "my-drive-root"}
         service.files.return_value.list.return_value.execute.side_effect = [
@@ -296,20 +302,20 @@ class ReportTests(unittest.TestCase):
             {"files": [{"id": "year-folder", "name": "2026", "mimeType": "application/vnd.google-apps.folder"}]},
             {"files": []},
         ]
-        with patch.object(app, "_build_drive_service", return_value=service):
-            with self.assertRaisesRegex(app.ReportError, "2026-09.xlsx"):
-                app.drive_workbook_bytes(settings, "2026-09")
+        with patch.object(drive, "_build_drive_service", return_value=service):
+            with self.assertRaisesRegex(errors.ReportError, "2026-09.xlsx"):
+                drive.drive_workbook_bytes(settings, "2026-09")
 
     def test_cli_help_explains_scheduled_competencies(self):
         output = StringIO()
         with redirect_stdout(output), self.assertRaises(SystemExit):
-            app.main(["--help"])
+            cli.main(["--help"])
         help_text = " ".join(output.getvalue().split())
         self.assertIn("Black dia 5 = mês anterior", help_text)
         self.assertIn("Latam dia 20 = mês atual", help_text)
 
     def test_config_example_uses_nonpersonal_placeholders(self):
-        example_path = Path(app.__file__).with_name("config.example.json")
+        example_path = Path(__file__).resolve().parents[1] / "config.example.json"
         data = json.loads(example_path.read_text(encoding="utf-8"))
         self.assertIsNone(data["owner_name"])
         self.assertIsNone(data["payment_footer"])
@@ -329,7 +335,7 @@ class ReportTests(unittest.TestCase):
         data = json.loads(self.config.read_text())
         data.pop("sender_name", None)
         self.config.write_text(json.dumps(data))
-        settings = app.load_settings(self.config)
+        settings = configuration.load_settings(self.config)
         self.assertEqual(settings.sender_name, "Hermes")
 
     def test_config_validation_and_relative_paths(self):
@@ -341,38 +347,38 @@ class ReportTests(unittest.TestCase):
         data = json.loads(self.config.read_text())
         data["recipients"][1]["sheet"] = "Pessoa01"
         self.config.write_text(json.dumps(data))
-        with self.assertRaisesRegex(app.ReportError, "duplicado"):
-            app.load_settings(self.config)
-        self.assertFalse(app.valid_email("a@example.com\nBcc: b@example.com"))
-        self.assertFalse(app.valid_email("a@example.com,b@example.com"))
+        with self.assertRaisesRegex(errors.ReportError, "duplicado"):
+            configuration.load_settings(self.config)
+        self.assertFalse(configuration.valid_email("a@example.com\nBcc: b@example.com"))
+        self.assertFalse(configuration.valid_email("a@example.com,b@example.com"))
         for email in ("a:b@example.com", "a@domain..com", ".a@example.com", "a@example.com\n", "a@-domain.com"):
-            self.assertFalse(app.valid_email(email), email)
-        self.assertTrue(app.valid_email("a.b+cartoes@example.com"))
+            self.assertFalse(configuration.valid_email(email), email)
+        self.assertTrue(configuration.valid_email("a.b+cartoes@example.com"))
 
     def test_scheduled_month_uses_brasilia_and_year_boundary(self):
-        self.assertEqual(app.scheduled_month("black", datetime(2027, 1, 5, 12, tzinfo=timezone.utc)), "2026-12")
-        self.assertEqual(app.scheduled_month("latam", datetime(2026, 10, 20, 12, tzinfo=timezone.utc)), "2026-10")
-        self.assertEqual(app.scheduled_month("latam", datetime(2027, 1, 20, 12, tzinfo=timezone.utc)), "2027-01")
-        with self.assertRaises(app.ReportError):
-            app.scheduled_month("black", datetime(2026, 10, 5, 1, tzinfo=timezone.utc))
+        self.assertEqual(scheduling.scheduled_month("black", datetime(2027, 1, 5, 12, tzinfo=timezone.utc)), "2026-12")
+        self.assertEqual(scheduling.scheduled_month("latam", datetime(2026, 10, 20, 12, tzinfo=timezone.utc)), "2026-10")
+        self.assertEqual(scheduling.scheduled_month("latam", datetime(2027, 1, 20, 12, tzinfo=timezone.utc)), "2027-01")
+        with self.assertRaises(errors.ReportError):
+            scheduling.scheduled_month("black", datetime(2026, 10, 5, 1, tzinfo=timezone.utc))
         for month in ("2026-13", "2026-9", "../2026-09", "0000-01"):
-            with self.assertRaises(app.ReportError):
-                app.validate_month(month)
+            with self.assertRaises(errors.ReportError):
+                scheduling.validate_month(month)
 
     def test_dry_run_uses_drive_source_when_configured(self):
         data = json.loads(self.config.read_text())
         data["input_source"] = "drive"
         data["drive_folder_name"] = "Cartão"
         self.config.write_text(json.dumps(data))
-        with patch.object(app, "drive_workbook_bytes", return_value=self.path.read_bytes()) as fetch, redirect_stdout(StringIO()):
-            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09"])
+        with patch.object(drive, "drive_workbook_bytes", return_value=self.path.read_bytes()) as fetch, redirect_stdout(StringIO()):
+            code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09"])
         self.assertEqual(code, 0)
-        fetch.assert_called_once_with(app.load_settings(self.config), "2026-09")
+        fetch.assert_called_once_with(configuration.load_settings(self.config), "2026-09")
         self.assertTrue((self.root / "outputs/2026-09/black/index.html").exists())
 
     def test_dry_run_does_not_connect_or_write_ledger(self):
-        with patch.object(app, "gmail_connect", side_effect=AssertionError("must not connect")), redirect_stdout(StringIO()):
-            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09"])
+        with patch.object(gmail_api, "gmail_connect", side_effect=AssertionError("must not connect")), redirect_stdout(StringIO()):
+            code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09"])
         self.assertEqual(code, 0)
         self.assertEqual(len(list((self.root / "outputs/2026-09/black").glob("*.html"))), 3)
         self.assertFalse(self.settings.state_dir.exists())
@@ -380,10 +386,10 @@ class ReportTests(unittest.TestCase):
     def test_preview_refresh_removes_only_previous_generated_files(self):
         folder = self.root / "preview"
         reports = self.reports()
-        app.write_previews(reports, folder)
+        previews.write_previews(reports, folder)
         custom = folder / "minha-nota.txt"
         custom.write_text("preservar")
-        app.write_previews([reports[0]], folder)
+        previews.write_previews([reports[0]], folder)
         self.assertEqual(len(list(folder.glob("*.html"))), 2)  # Pessoa01 + index
         self.assertTrue(custom.exists())
         self.assertNotIn("Pessoa02", (folder / "index.html").read_text())
@@ -391,8 +397,8 @@ class ReportTests(unittest.TestCase):
     def test_send_requires_personal_copy_email_before_connecting(self):
         settings = replace(self.settings, personal_copy_email=None)
         connector = MagicMock()
-        with self.assertRaisesRegex(app.ReportError, "personal_copy_email"):
-            app.send_reports(self.reports(), settings, "hash", connector=connector)
+        with self.assertRaisesRegex(errors.ReportError, "personal_copy_email"):
+            deliveries.send_reports(self.reports(), settings, "hash", connector=connector)
         connector.assert_not_called()
         self.assertFalse(settings.state_dir.exists())
 
@@ -400,13 +406,13 @@ class ReportTests(unittest.TestCase):
         reports = [self.reports()[0]]
         connection = MagicMock()
         connection.email_address = "owner@gmail.com"
-        with patch.object(app, "gmail_connect", return_value=connection) as connect:
-            sent, skipped = app.send_reports(reports, self.settings, "hash")
+        with patch.object(gmail_api, "gmail_connect", return_value=connection) as connect:
+            sent, skipped = deliveries.send_reports(reports, self.settings, "hash")
         connect.assert_called_once_with(self.settings.google_token_file)
         self.assertEqual((sent, skipped), (1, 0))
         message = connection.send_message.call_args.args[0]
         self.assertEqual(message["From"], "Hermes de teste <owner@gmail.com>")
-        self.assertEqual(message["Subject"], app.subject(reports[0]))
+        self.assertEqual(message["Subject"], rendering.subject(reports[0]))
         self.assertEqual(message["To"], "pessoa01@example.com")
         self.assertEqual(message["Cc"], "copy@example.com")
         connection.close.assert_called_once()
@@ -417,8 +423,8 @@ class ReportTests(unittest.TestCase):
         service.users.return_value.getProfile.return_value.execute.return_value = {
             "emailAddress": "owner@gmail.com"
         }
-        with patch.object(app, "_build_gmail_service", return_value=service) as build_service:
-            connection = app.gmail_connect(token_file)
+        with patch.object(gmail_api, "_build_gmail_service", return_value=service) as build_service:
+            connection = gmail_api.gmail_connect(token_file)
         build_service.assert_called_once_with(token_file)
         self.assertEqual(connection.email_address, "owner@gmail.com")
 
@@ -430,10 +436,10 @@ class ReportTests(unittest.TestCase):
         service.users.return_value.messages.return_value.send.return_value.execute.return_value = {
             "id": "gmail-internal-id"
         }
-        client = app.GmailAPIConnection(service)
+        client = gmail_api.GmailAPIConnection(service)
         self.assertEqual(client.email_address, "owner@gmail.com")
 
-        message = app.make_message(self.reports()[0], client.email_address, self.settings.sender_name, "pessoa01@example.com", cc=self.settings.personal_copy_email)
+        message = deliveries.make_message(self.reports()[0], client.email_address, self.settings.sender_name, "pessoa01@example.com", cc=self.settings.personal_copy_email)
         result = client.send_message(message)
 
         self.assertEqual(result["id"], "gmail-internal-id")
@@ -453,7 +459,7 @@ class ReportTests(unittest.TestCase):
         service = MagicMock()
         service.users.return_value.getProfile.return_value.execute.side_effect = RuntimeError("offline")
         with self.assertRaisesRegex(RuntimeError, "offline"):
-            app.GmailAPIConnection(service)
+            gmail_api.GmailAPIConnection(service)
         service._http.close.assert_called_once()
 
     def test_gmail_api_connection_marks_http_4xx_as_definitive_rejection(self):
@@ -464,19 +470,19 @@ class ReportTests(unittest.TestCase):
         error = RuntimeError("private API response")
         error.resp = type("Response", (), {"status": 403})()
         service.users.return_value.messages.return_value.send.return_value.execute.side_effect = error
-        connection = app.GmailAPIConnection(service)
-        with self.assertRaises(app.GmailSendRejected):
-            connection.send_message(app.make_message(self.reports()[0], "owner@gmail.com", "Cartões", "pessoa01@example.com"))
+        connection = gmail_api.GmailAPIConnection(service)
+        with self.assertRaises(gmail_api.GmailSendRejected):
+            connection.send_message(deliveries.make_message(self.reports()[0], "owner@gmail.com", "Cartões", "pessoa01@example.com"))
 
     def test_hermes_launchers_use_config_and_scheduled_production_mode(self):
         root = Path(__file__).resolve().parents[1]
         for card in ("black", "latam"):
             default = Path("~/Projetos/Automations/cartoes/config.json").expanduser()
             for configured, expected in ((None, default), (str(self.config), self.config)):
-                with self.subTest(card=card, configured=configured), patch.dict(app.os.environ), patch.object(app, "main", return_value=0) as main:
-                    app.os.environ.pop("CARTOES_CONFIG", None)
+                with self.subTest(card=card, configured=configured), patch.dict(os.environ), patch.object(legacy_cli, "main", return_value=0) as main:
+                    os.environ.pop("CARTOES_CONFIG", None)
                     if configured is not None:
-                        app.os.environ["CARTOES_CONFIG"] = configured
+                        os.environ["CARTOES_CONFIG"] = configured
                     with self.assertRaises(SystemExit) as exited:
                         runpy.run_path(str(root / f"hermes/cartao_{card}.py"), run_name="__main__")
                     self.assertEqual(exited.exception.code, 0)
@@ -485,8 +491,8 @@ class ReportTests(unittest.TestCase):
     def test_missing_file_sends_owner_alert_with_copy_without_creating_ledger(self):
         self.path.unlink()
         gmail = FakeGmail()
-        with patch.object(app, "gmail_connect", return_value=gmail) as connect, redirect_stderr(StringIO()):
-            self.assertEqual(app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"]), 1)
+        with patch.object(gmail_api, "gmail_connect", return_value=gmail) as connect, redirect_stderr(StringIO()):
+            self.assertEqual(cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"]), 1)
         connect.assert_called_once()
         self.assertEqual([m["To"] for m in gmail.messages], ["owner@gmail.com"])
         self.assertEqual(gmail.messages[0]["From"], "Hermes de teste <owner@gmail.com>")
@@ -516,8 +522,8 @@ class ReportTests(unittest.TestCase):
                                     data = data.replace(b"</sheetData>", b"</bad-sheetData>")
                             target.writestr(name, data)
                 gmail, stderr = FakeGmail(), StringIO()
-                with patch.object(app, "gmail_connect", return_value=gmail) as connect, redirect_stderr(stderr):
-                    code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+                with patch.object(gmail_api, "gmail_connect", return_value=gmail) as connect, redirect_stderr(stderr):
+                    code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
                 self.assertEqual(code, 1)
                 connect.assert_called_once()
                 self.assertEqual(len(gmail.messages), 1)
@@ -545,8 +551,8 @@ class ReportTests(unittest.TestCase):
                     data["recipients"][1]["email"] = None
                     self.config.write_text(json.dumps(data))
                 gmail = FakeGmail()
-                with patch.object(app, "gmail_connect", return_value=gmail), redirect_stderr(StringIO()):
-                    code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+                with patch.object(gmail_api, "gmail_connect", return_value=gmail), redirect_stderr(StringIO()):
+                    code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
                 self.assertEqual(code, 1)
                 self.assertEqual([m["To"] for m in gmail.messages], ["owner@gmail.com"])
                 self.assertFalse((self.settings.state_dir / "deliveries.sqlite3").exists())
@@ -554,8 +560,8 @@ class ReportTests(unittest.TestCase):
     def test_invalid_config_uses_hermes_oauth_for_owner_alert(self):
         self.config.write_text("{invalid JSON")
         gmail = FakeGmail()
-        with patch.dict(app.os.environ, {}, clear=True), patch.object(app, "gmail_connect", return_value=gmail) as connect, redirect_stderr(StringIO()):
-            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+        with patch.dict(os.environ, {}, clear=True), patch.object(gmail_api, "gmail_connect", return_value=gmail) as connect, redirect_stderr(StringIO()):
+            code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
         self.assertEqual(code, 1)
         connect.assert_called_once_with(Path.home() / ".hermes/google_token.json")
         self.assertEqual([m["To"] for m in gmail.messages], ["owner@gmail.com"])
@@ -564,8 +570,8 @@ class ReportTests(unittest.TestCase):
     def test_dry_run_errors_never_connect_to_gmail(self):
         self.path.write_bytes(b"not an Excel archive")
         for mode in ([], ["--dry-run"]):
-            with self.subTest(mode=mode), patch.object(app, "gmail_connect") as connect, redirect_stderr(StringIO()):
-                code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", *mode])
+            with self.subTest(mode=mode), patch.object(gmail_api, "gmail_connect") as connect, redirect_stderr(StringIO()):
+                code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", *mode])
                 self.assertEqual(code, 1)
                 connect.assert_not_called()
 
@@ -574,8 +580,8 @@ class ReportTests(unittest.TestCase):
         for error in (RuntimeError("SECRET_SERVER_RESPONSE"), TimeoutError("SECRET_SERVER_RESPONSE")):
             with self.subTest(error=type(error).__name__):
                 stderr = StringIO()
-                with patch.object(app, "gmail_connect", side_effect=error) as connect, redirect_stderr(stderr):
-                    code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+                with patch.object(gmail_api, "gmail_connect", side_effect=error) as connect, redirect_stderr(stderr):
+                    code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
                 self.assertEqual(code, 1)
                 connect.assert_called_once()
                 self.assertIn("ausente", stderr.getvalue())
@@ -585,17 +591,17 @@ class ReportTests(unittest.TestCase):
     def test_alert_is_not_redirected_to_test_recipient(self):
         self.path.unlink()
         gmail = FakeGmail()
-        with patch.object(app, "gmail_connect", return_value=gmail), redirect_stderr(StringIO()):
-            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send", "--test-to", "test@example.com"])
+        with patch.object(gmail_api, "gmail_connect", return_value=gmail), redirect_stderr(StringIO()):
+            code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send", "--test-to", "test@example.com"])
         self.assertEqual(code, 1)
         self.assertEqual([m["To"] for m in gmail.messages], ["owner@gmail.com"])
 
     def test_alert_rejection_does_not_retry(self):
         self.path.unlink()
-        gmail = FakeGmail(1, app.GmailSendRejected("rejected"))
+        gmail = FakeGmail(1, gmail_api.GmailSendRejected("rejected"))
         stderr = StringIO()
-        with patch.object(app, "gmail_connect", return_value=gmail) as connect, redirect_stderr(stderr):
-            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+        with patch.object(gmail_api, "gmail_connect", return_value=gmail) as connect, redirect_stderr(stderr):
+            code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
         self.assertEqual(code, 1)
         connect.assert_called_once()
         self.assertEqual(gmail.calls, 1)
@@ -603,14 +609,14 @@ class ReportTests(unittest.TestCase):
         self.assertIn("Não foi possível confirmar o aviso", stderr.getvalue())
 
     def test_missing_oauth_token_reports_setup_requirement(self):
-        with patch.object(app, "_build_gmail_service", side_effect=FileNotFoundError):
-            with self.assertRaisesRegex(app.ReportError, "token OAuth"):
-                app.gmail_connect(self.settings.google_token_file)
+        with patch.object(gmail_api, "_build_gmail_service", side_effect=FileNotFoundError):
+            with self.assertRaisesRegex(errors.ReportError, "token OAuth"):
+                gmail_api.gmail_connect(self.settings.google_token_file)
 
     def test_unexpected_failure_alert_does_not_expose_exception_payload(self):
         gmail, stderr = FakeGmail(), StringIO()
-        with patch.object(app, "read_reports", side_effect=RuntimeError("PRIVATE_PAYLOAD")), patch.object(app, "gmail_connect", return_value=gmail), redirect_stderr(stderr):
-            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+        with patch.object(workbooks, "read_reports", side_effect=RuntimeError("PRIVATE_PAYLOAD")), patch.object(gmail_api, "gmail_connect", return_value=gmail), redirect_stderr(stderr):
+            code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
         self.assertEqual(code, 1)
         self.assertEqual([m["To"] for m in gmail.messages], ["owner@gmail.com"])
         self.assertIn("RuntimeError", gmail.messages[0].get_content())
@@ -619,8 +625,8 @@ class ReportTests(unittest.TestCase):
     def test_partial_send_failure_sends_owner_alert_and_keeps_history(self):
         delivery = FakeGmail(2, TimeoutError("PRIVATE_SERVER_RESPONSE"))
         alert = FakeGmail()
-        with patch.object(app, "gmail_connect", side_effect=[delivery, alert]), redirect_stderr(StringIO()):
-            code = app.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
+        with patch.object(gmail_api, "gmail_connect", side_effect=[delivery, alert]), redirect_stderr(StringIO()):
+            code = cli.main(["--config", str(self.config), "--card", "black", "--month", "2026-09", "--send"])
         self.assertEqual(code, 1)
         self.assertEqual([m["To"] for m in delivery.messages], ["pessoa01@example.com"])
         self.assertEqual([m["To"] for m in alert.messages], ["owner@gmail.com"])
@@ -628,16 +634,17 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn("Nenhum resumo foi enviado", alert.messages[0].get_content())
         self.assertNotIn("PRIVATE_SERVER_RESPONSE", alert.messages[0].get_content())
         with sqlite3.connect(self.settings.state_dir / "deliveries.sqlite3") as db:
+            self.addCleanup(db.close)
             self.assertEqual(db.execute("SELECT sheet, status FROM deliveries ORDER BY sheet").fetchall(), [("Pessoa01", "sent"), ("Pessoa02", "unknown")])
 
     def test_history_shows_original_address_and_update_time(self):
-        app.send_reports([self.reports()[0]], self.settings, "hash", connector=lambda *_: FakeGmail())
+        deliveries.send_reports([self.reports()[0]], self.settings, "hash", connector=lambda *_: FakeGmail())
         data = json.loads(self.config.read_text())
         data["recipients"][0]["email"] = "changed@example.com"
         self.config.write_text(json.dumps(data))
         stdout = StringIO()
         with redirect_stdout(stdout):
-            code = app.main(["--config", str(self.config), "--history", "--month", "2026-09"])
+            code = cli.main(["--config", str(self.config), "--history", "--month", "2026-09"])
         self.assertEqual(code, 0)
         self.assertIn("destinatário | atualização (UTC) | Message-ID", stdout.getvalue())
         self.assertIn("pessoa01@example.com", stdout.getvalue())
@@ -646,91 +653,92 @@ class ReportTests(unittest.TestCase):
 
     def test_partial_failure_and_retry_skip_success(self):
         reports = self.reports()
-        gmail = FakeGmail(error_at=2, error=app.GmailSendRejected("Rejected"))
-        with self.assertRaises(app.ReportError):
-            app.send_reports(reports, self.settings, "hash", connector=lambda *_: gmail)
+        gmail = FakeGmail(error_at=2, error=gmail_api.GmailSendRejected("Rejected"))
+        with self.assertRaises(errors.ReportError):
+            deliveries.send_reports(reports, self.settings, "hash", connector=lambda *_: gmail)
         self.assertTrue(gmail.closed)
         second = FakeGmail()
-        self.assertEqual(app.send_reports(reports, self.settings, "newhash", connector=lambda *_: second), (1, 1))
+        self.assertEqual(deliveries.send_reports(reports, self.settings, "newhash", connector=lambda *_: second), (1, 1))
         self.assertEqual(second.messages[0]["To"], "pessoa02@example.com")
-        self.assertEqual(app.send_reports(reports, self.settings, "newhash", connector=lambda *_: self.fail("duplicate")), (0, 2))
+        self.assertEqual(deliveries.send_reports(reports, self.settings, "newhash", connector=lambda *_: self.fail("duplicate")), (0, 2))
 
     def test_timeout_is_unknown_and_not_retried(self):
         reports = self.reports()
-        with self.assertRaisesRegex(app.ReportError, "incerto"):
-            app.send_reports(reports, self.settings, "hash", connector=lambda *_: FakeGmail(1, TimeoutError()))
-        with self.assertRaisesRegex(app.ReportError, "incerto"):
-            app.send_reports(reports, self.settings, "hash", connector=lambda *_: self.fail("must not connect"))
+        with self.assertRaisesRegex(errors.ReportError, "incerto"):
+            deliveries.send_reports(reports, self.settings, "hash", connector=lambda *_: FakeGmail(1, TimeoutError()))
+        with self.assertRaisesRegex(errors.ReportError, "incerto"):
+            deliveries.send_reports(reports, self.settings, "hash", connector=lambda *_: self.fail("must not connect"))
         with redirect_stdout(StringIO()):
-            app.maintain_ledger(self.settings, "2026-09", "black", "Pessoa01", "sent")
+            history.maintain_ledger(self.settings, "2026-09", "black", "Pessoa01", "sent")
         gmail = FakeGmail()
-        self.assertEqual(app.send_reports(reports, self.settings, "hash", connector=lambda *_: gmail), (1, 1))
+        self.assertEqual(deliveries.send_reports(reports, self.settings, "hash", connector=lambda *_: gmail), (1, 1))
 
     def test_interruption_is_recovered_as_unknown(self):
         report = self.reports()[0]
-        with app.run_lock(self.settings.state_dir):
-            ledger = app.Ledger(self.settings.state_dir / "deliveries.sqlite3")
+        with locking.run_lock(self.settings.state_dir):
+            ledger = history.Ledger(self.settings.state_dir / "deliveries.sqlite3")
             ledger.claim(report, "<attempt@example.com>", "hash")
             ledger.close()
-        with self.assertRaisesRegex(app.ReportError, "incerto"):
-            app.send_reports([report], self.settings, "hash", connector=lambda *_: self.fail("must not connect"))
+        with self.assertRaisesRegex(errors.ReportError, "incerto"):
+            deliveries.send_reports([report], self.settings, "hash", connector=lambda *_: self.fail("must not connect"))
 
     def test_database_failure_after_gmail_acceptance_blocks_retry(self):
         report, gmail = self.reports()[0], FakeGmail()
-        with patch.object(app.Ledger, "finish", side_effect=sqlite3.OperationalError("disk error")):
+        with patch.object(history.Ledger, "finish", side_effect=sqlite3.OperationalError("disk error")):
             with self.assertRaises(sqlite3.OperationalError):
-                app.send_reports([report], self.settings, "hash", connector=lambda *_: gmail)
+                deliveries.send_reports([report], self.settings, "hash", connector=lambda *_: gmail)
         self.assertEqual(len(gmail.messages), 1)
-        with self.assertRaisesRegex(app.ReportError, "incerto"):
-            app.send_reports([report], self.settings, "hash", connector=lambda *_: self.fail("must not reconnect"))
+        with self.assertRaisesRegex(errors.ReportError, "incerto"):
+            deliveries.send_reports([report], self.settings, "hash", connector=lambda *_: self.fail("must not reconnect"))
 
     def test_test_delivery_redirects_without_production_history(self):
         gmail = FakeGmail()
         reports = self.reports()
-        app.send_reports(reports, self.settings, "hash", test_to="owner@gmail.com", connector=lambda *_: gmail)
+        deliveries.send_reports(reports, self.settings, "hash", test_to="owner@gmail.com", connector=lambda *_: gmail)
         self.assertEqual(len(gmail.messages), 2)
         for report, msg in zip(reports, gmail.messages, strict=True):
             self.assertEqual(msg["To"], "owner@gmail.com")
             self.assertEqual(msg["Cc"], "copy@example.com")
-            self.assertEqual(msg["Subject"], "[TESTE] " + app.subject(report))
+            self.assertEqual(msg["Subject"], "[TESTE] " + rendering.subject(report))
         self.assertFalse((self.settings.state_dir / "deliveries.sqlite3").exists())
 
     def test_missing_recipient_blocks_whole_batch_before_gmail(self):
         report = self.reports()[1]
-        bad = app.Report(report.card, report.month, app.Recipient("Pessoa02", "Participante02", None), report.purchases, report.payments)
-        with self.assertRaisesRegex(app.ReportError, "Pessoa02"):
-            app.send_reports([self.reports()[0], bad], self.settings, "hash", connector=lambda *_: self.fail("must not connect"))
+        bad = models.Report(report.card, report.month, models.Recipient("Pessoa02", "Participante02", None), report.purchases, report.payments)
+        with self.assertRaisesRegex(errors.ReportError, "Pessoa02"):
+            deliveries.send_reports([self.reports()[0], bad], self.settings, "hash", connector=lambda *_: self.fail("must not connect"))
         self.assertFalse(self.settings.state_dir.exists())
 
     def test_lock_blocks_parallel_execution(self):
-        with app.run_lock(self.settings.state_dir):
-            with self.assertRaisesRegex(app.ReportError, "andamento"):
-                with app.run_lock(self.settings.state_dir):
+        with locking.run_lock(self.settings.state_dir):
+            with self.assertRaisesRegex(errors.ReportError, "andamento"):
+                with locking.run_lock(self.settings.state_dir):
                     self.fail("second sender obtained lock")
 
     def test_lock_blocks_a_separate_process(self):
         script = """import sys
 from pathlib import Path
-import cartoes
+from resumos_cartoes.locking import run_lock
+from resumos_cartoes.errors import ReportError
 try:
-    with cartoes.run_lock(Path(sys.argv[1])):
+    with run_lock(Path(sys.argv[1])):
         sys.exit(2)
-except cartoes.ReportError:
+except ReportError:
     sys.exit(0)
 """
-        with app.run_lock(self.settings.state_dir):
+        with locking.run_lock(self.settings.state_dir):
             result = subprocess.run([sys.executable, "-c", script, str(self.settings.state_dir)],
-                                    cwd=Path(app.__file__).resolve().parent, capture_output=True, timeout=10)
+                                    cwd=Path(__file__).resolve().parents[1], capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     def test_oauth_auth_error_occurs_before_claim(self):
         def fail_connect(*_):
-            raise app.ReportError("OAuth authentication failed")
+            raise errors.ReportError("OAuth authentication failed")
 
-        with self.assertRaises(app.ReportError):
-            app.send_reports(self.reports(), self.settings, "hash", connector=fail_connect)
-        with app.run_lock(self.settings.state_dir):
-            ledger = app.Ledger(self.settings.state_dir / "deliveries.sqlite3")
+        with self.assertRaises(errors.ReportError):
+            deliveries.send_reports(self.reports(), self.settings, "hash", connector=fail_connect)
+        with locking.run_lock(self.settings.state_dir):
+            ledger = history.Ledger(self.settings.state_dir / "deliveries.sqlite3")
             self.assertIsNone(ledger.get(self.reports()[0]))
             ledger.close()
 
@@ -739,8 +747,8 @@ except cartoes.ReportError:
         del data["google_token_file"]
         self.config.write_text(json.dumps(data))
         hermes_home = self.root / "profile-hermes"
-        with patch.dict(app.os.environ, {"HERMES_HOME": str(hermes_home)}):
-            settings = app.load_settings(self.config)
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            settings = configuration.load_settings(self.config)
         self.assertEqual(settings.google_token_file, (hermes_home / "google_token.json").resolve())
 
 
@@ -753,7 +761,7 @@ class AnonymousWorkbookTests(unittest.TestCase):
             config.write_text(json.dumps({"owner_name": "Proprietário fictício", "recipients": [
                 {"sheet": p["sheet"], "participant": p["participant"], "email": None} for p in fixture["people"]
             ]}), encoding="utf-8")
-            settings = app.load_settings(config)
+            settings = configuration.load_settings(config)
             workbook = openpyxl.Workbook()
             workbook.remove(workbook.active)
             expected_purchases = {}
@@ -768,7 +776,7 @@ class AnonymousWorkbookTests(unittest.TestCase):
                     row += 1
                     for value in person[card]["purchases"]:
                         amount = Decimal(value)
-                        purchase = app.Purchase(date(2025, 1, 3), ("Descrição fictícia extensa com <símbolos> & detalhes " * 5).strip(),
+                        purchase = models.Purchase(date(2025, 1, 3), ("Descrição fictícia extensa com <símbolos> & detalhes " * 5).strip(),
                                                 "2 de 12", amount * 2, amount)
                         sheet.cell(row, 1, purchase.date)
                         sheet.cell(row, 2, purchase.description)
@@ -791,7 +799,7 @@ class AnonymousWorkbookTests(unittest.TestCase):
             workbook.save(path)
             workbook.close()
             for card in ("black", "latam"):
-                reports = app.read_reports(path, settings, card, fixture["month"])
+                reports = workbooks.read_reports(path, settings, card, fixture["month"])
                 self.assertEqual(len(reports), 12)
                 self.assertEqual(sum(r.has_movement for r in reports), fixture["expected_messages"][card])
                 for report, person in zip(reports, fixture["people"], strict=True):
@@ -809,16 +817,16 @@ class ProvidedWorkbookTests(unittest.TestCase):
 
     @unittest.skipUnless((root / "inputs/2026-09.xlsx").exists(), "Exemplo pessoal não está no checkout")
     def test_all_24_blocks_match_independent_cached_personal_summaries(self):
-        settings = app.load_settings(self.root / "config.example.json")
+        settings = configuration.load_settings(self.root / "config.example.json")
         wb = openpyxl.load_workbook(self.root / "inputs/2026-09.xlsx", data_only=True)
         self.addCleanup(wb.close)
         for card, start, share_column, expected_count in (("black", 1, 5, 11), ("latam", 7, 11, 3)):
-            reports = app.read_reports(self.root / "inputs/2026-09.xlsx", settings, card, "2026-09")
+            reports = workbooks.read_reports(self.root / "inputs/2026-09.xlsx", settings, card, "2026-09")
             self.assertEqual(len(reports), 12)
             self.assertEqual(sum(r.has_movement for r in reports), expected_count)
             for report in reports:
                 with self.subTest(card=card, person=report.recipient.sheet):
-                    self.assertLess(len(app.render_html(report).encode("utf-8")), 80_000)
+                    self.assertLess(len(rendering.render_html(report).encode("utf-8")), 80_000)
                     source = wb[report.recipient.sheet]
                     purchases, payments = [], []
                     for row in range(6, source.max_row + 1):
@@ -826,11 +834,11 @@ class ProvidedWorkbookTests(unittest.TestCase):
                         value = source.cell(row, share_column).value
                         if isinstance(when, datetime):
                             installment = source.cell(row, start + 2).value
-                            purchases.append(app.Purchase(when.date(), source.cell(row, start + 1).value.strip(),
+                            purchases.append(models.Purchase(when.date(), source.cell(row, start + 1).value.strip(),
                                 "—" if installment is None or installment == 0 else str(installment),
-                                app._money(source.cell(row, start + 3).value, "fixture"), app._money(value, "fixture")))
+                                workbooks._money(source.cell(row, start + 3).value, "fixture"), workbooks._money(value, "fixture")))
                         elif when == "PAGAMENTOS":
-                            payments.append(app._money(value, "fixture"))
+                            payments.append(workbooks._money(value, "fixture"))
                         elif when in ("TOTAL", "TOTAL GERAL"):
                             expected = Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding="ROUND_HALF_UP")
                             self.assertEqual(report.spending if when == "TOTAL" else report.balance, expected)

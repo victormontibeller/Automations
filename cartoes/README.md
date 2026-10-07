@@ -339,3 +339,55 @@ Se esta automação já estava instalada na raiz do repositório ou em
   ativo por cartão.
 
 A reorganização local não altera uma instalação já existente no servidor.
+
+### Package development (stage 1)
+
+The implementation lives in `src/resumos_cartoes/`. Install the project before
+running it; no entry point changes `sys.path` or relies on the current directory
+for imports. The source `cartoes.py` is only a CLI shim. The installed `cartoes`
+compatibility module exports `main` for the existing Hermes launchers.
+
+```bash
+# From cartoes/, using this checkout's independent virtual environment:
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip check
+.venv/bin/python -m unittest discover -s tests -v
+
+# All three entry points use the same parser and execution policy:
+.venv/bin/python cartoes.py --help
+.venv/bin/cartoes --help
+.venv/bin/python -m resumos_cartoes --help
+```
+
+Use `pip install .` instead of `pip install -e .` to test a regular wheel install.
+After source edits, reinstall a regular install before testing. Installed console
+and module commands also work outside the checkout. Pass an absolute `--config`
+path there; the default remains `config.json` in the current working directory.
+Configuration-relative input, output, state and token paths are unchanged.
+
+Responsibilities are intentionally local to this automation:
+
+| Module | Responsibility |
+| --- | --- |
+| `models`, `errors` | Immutable report data, Decimal totals and controlled errors |
+| `config` | JSON validation, defaults and Hermes credential-path resolution |
+| `workbook`, `scheduling` | Excel validation/recalculation and card business dates |
+| `rendering`, `previews` | HTML/text generation and local preview files |
+| `gmail`, `drive` | Local Google adapters, including lazy OAuth client construction |
+| `delivery`, `alerts` | Individual MIME envelopes, batch delivery and owner alerts |
+| `ledger`, `locking` | Existing SQLite schema, reconciliation and process exclusion |
+| `service`, `cli` | Application orchestration/error policy and argument parsing |
+
+Models and recalculation do not import Google clients or the CLI. Tests patch
+actual defining seams such as `resumos_cartoes.gmail.gmail_connect` and
+`resumos_cartoes.workbook.read_reports`, not compatibility-module globals.
+`test_package.py` checks import boundaries, cycles and entry points outside the
+checkout, including a synthetic local preview. `test_characterization.py` compares
+complete HTML/text against synthetic outputs captured from the original monolith;
+golden changes require review, not automatic regeneration. The original
+regression suite remains in `test_cartoes.py`; MIME envelope contracts have a
+focused test file as well.
+
+This stage does not introduce a shared library, change delivery logs/results,
+migrate configuration/history, or change the Hermes launcher arguments/defaults.
+Google integrations remain inside `cartoes/` for a separate stage 2 review.

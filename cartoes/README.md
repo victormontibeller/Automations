@@ -342,10 +342,13 @@ A reorganização local não altera uma instalação já existente no servidor.
 
 ### Development and module responsibilities
 
-The implementation lives in `src/resumos_cartoes/`. Install the project before
-running it; no entry point changes `sys.path` or relies on the current directory
-for imports. The source `cartoes.py` is only a CLI shim. The installed `cartoes`
-compatibility module exports `main` for the existing Hermes launchers.
+The implementation lives directly in `src/`, without a nested package directory.
+`pyproject.toml` maps that directory to the existing Python import name
+`resumos_cartoes`; imports and `python -m resumos_cartoes` therefore stay compatible.
+Install the project before running it; no entry point changes `sys.path` or relies
+on the current directory for imports. The root `cartoes.py` serves both as the
+source CLI and the installed compatibility module exporting `main` for Hermes.
+There is no second copy of this shim inside `src/`.
 
 Use the [repository development commands](../README.md#shared-integrations)
 for installation and tests. All three entry points use the same parser:

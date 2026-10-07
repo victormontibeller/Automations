@@ -21,10 +21,14 @@ Automations/
 └── cartoes/
     ├── README.md
     ├── pyproject.toml
-    ├── cartoes.py    # compatibility CLI shim
-    ├── src/
-    │   ├── cartoes.py  # installed legacy main import
-    │   └── resumos_cartoes/
+    ├── cartoes.py    # source CLI and installed compatibility entry point
+    ├── src/          # application modules, without an extra directory layer
+    │   ├── __init__.py
+    │   ├── cli.py
+    │   ├── config.py
+    │   ├── workbook.py
+    │   ├── delivery.py
+    │   └── ...
     ├── config.example.json
     ├── .env.example  # nota de migração; não copiar para .env
     ├── hermes/

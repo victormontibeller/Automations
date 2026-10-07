@@ -13,9 +13,7 @@ dependencies = ["openpyxl==3.1.5", "automation-core==0.1.0"]
 cartoes = "resumos_cartoes.cli:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+packages = ["resumos_cartoes"]
+package-dir = {"resumos_cartoes" = "src"}
 py-modules = ["cartoes"]
-
-[tool.setuptools.packages.find]
-where = ["src"]
 

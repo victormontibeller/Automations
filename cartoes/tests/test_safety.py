@@ -29,9 +29,15 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_private_workbook_requires_explicit_opt_in(self):
+        fixture = ROOT / "cartoes/inputs/2026-09.xlsx"
+        original_exists = Path.exists
+
+        def exists_with_fixture(path):
+            return path == fixture or original_exists(path)
+
         for enabled in (False, True):
             with self.subTest(enabled=enabled), patch.dict(os.environ, {}, clear=True), \
-                    patch.object(Path, "exists", return_value=True):
+                    patch.object(Path, "exists", exists_with_fixture):
                 if enabled:
                     os.environ["CARTOES_TEST_PRIVATE_WORKBOOK"] = "1"
                 namespace = runpy.run_path(str(ROOT / "cartoes/tests/test_cartoes.py"))

@@ -11,7 +11,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / "src/resumos_cartoes"
+PACKAGE = ROOT / "src"
 
 
 class PackageArchitectureTests(unittest.TestCase):
@@ -21,7 +21,9 @@ class PackageArchitectureTests(unittest.TestCase):
             "scheduling", "locking", "ledger", "gmail", "drive", "delivery",
             "alerts", "service", "cli",
         }
-        self.assertTrue(PACKAGE.is_dir(), "The app must live in src/resumos_cartoes, not the CLI shim")
+        self.assertTrue(PACKAGE.is_dir(), "Application modules must live directly in src/")
+        self.assertFalse((PACKAGE / "resumos_cartoes").exists(), "No extra source directory layer")
+        self.assertFalse((PACKAGE / "cartoes.py").exists(), "Reuse the root CLI shim instead of duplicating it")
         self.assertTrue(required <= {p.stem for p in PACKAGE.glob("*.py")})
         graph = {}
         for path in PACKAGE.glob("*.py"):
@@ -41,10 +43,10 @@ class PackageArchitectureTests(unittest.TestCase):
                 visit(dependency, (*ancestors, module))
         for module in graph:
             visit(module, ())
-        for path in (ROOT / "cartoes.py", ROOT / "src/cartoes.py"):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            self.assertFalse(any(isinstance(n, (ast.FunctionDef, ast.ClassDef)) for n in ast.walk(tree)), path.name)
-            self.assertNotIn("sys.path", path.read_text(encoding="utf-8"))
+        path = ROOT / "cartoes.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        self.assertFalse(any(isinstance(n, (ast.FunctionDef, ast.ClassDef)) for n in ast.walk(tree)), path.name)
+        self.assertNotIn("sys.path", path.read_text(encoding="utf-8"))
 
     def test_models_and_recalculation_import_without_google_or_cli(self):
         self.assertIsNotNone(importlib.util.find_spec("resumos_cartoes"), "Installable package missing")

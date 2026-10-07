@@ -15,7 +15,7 @@ jobs:
     name: ${{ matrix.os }} / Python ${{ matrix.python }} / ${{ matrix.install }}
     runs-on: ${{ matrix.os }}
     env:
-      HERMES_HOME: ${{ runner.temp }}/no-credentials
+      HERMES_HOME: ${{ github.workspace }}/.ci-no-credentials
       CARTOES_TEST_PRIVATE_WORKBOOK: "0"
     strategy:
       fail-fast: false

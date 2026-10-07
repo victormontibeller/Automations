@@ -1,14 +1,14 @@
 # Automations
 
 Repositório de automações pessoais. Cada automação fica em uma pasta própria
-dentro de `automations/`, com código, dependências, configuração, testes e dados
+na raiz do repositório, com código, dependências, configuração, testes e dados
 de execução independentes.
 
 ## Automações disponíveis
 
 | Automação | Finalidade | Documentação |
 | --- | --- | --- |
-| Cartões | Gerar e enviar pelo Gmail os resumos individuais dos cartões Black e Latam, com execução pelo Hermes. | [Instalação e uso](automations/cartoes/README.md) |
+| Cartões | Gerar e enviar pelo Gmail os resumos individuais dos cartões Black e Latam, com execução pelo Hermes. | [Instalação e uso](cartoes/README.md) |
 
 ## Estrutura
 
@@ -16,18 +16,17 @@ de execução independentes.
 Automations/
 ├── README.md
 ├── .gitignore
-└── automations/
-    └── cartoes/
-        ├── README.md
-        ├── pyproject.toml
-        ├── cartoes.py
-        ├── config.example.json
-        ├── .env.example  # nota de migração; não copiar para .env
-        ├── hermes/
-        ├── tests/
-        ├── inputs/       # arquivos opcionais no modo local
-        ├── outputs/      # prévias HTML e texto
-        └── var/          # histórico e trava; criado durante o uso
+└── cartoes/
+    ├── README.md
+    ├── pyproject.toml
+    ├── cartoes.py
+    ├── config.example.json
+    ├── .env.example  # nota de migração; não copiar para .env
+    ├── hermes/
+    ├── tests/
+    ├── inputs/       # arquivos opcionais no modo local
+    ├── outputs/      # prévias HTML e texto
+    └── var/          # histórico e trava; criado durante o uso
 ```
 
 Planilhas, prévias, histórico, credenciais e ambientes Python são locais e ficam
@@ -38,7 +37,7 @@ fora do Git. Os arquivos de exemplo de configuração fazem parte do repositóri
 A partir da raiz:
 
 ```bash
-cd automations/cartoes
+cd cartoes
 python3 -m venv .venv
 .venv/bin/python -m pip install .
 cp config.example.json config.json
@@ -51,12 +50,12 @@ Por padrão, a planilha deve estar no Google Drive em
 `Meu Drive/Cartão/2026/2026-09.xlsx`; o ano e o nome esperado acompanham o mês
 solicitado. Para desenvolvimento local, configure `input_source: "local"` e
 `input_dir`. Para configurar contatos, Gmail e agendamentos, siga o
-[guia dos cartões](automations/cartoes/README.md). A planilha pessoal não acompanha
+[guia dos cartões](cartoes/README.md). A planilha pessoal não acompanha
 um clone do repositório.
 
 ## Adicionar outra automação
 
-1. Crie `automations/<nome>/`, com um nome curto e descritivo.
+1. Crie `<nome>/`, com um nome curto e descritivo.
 2. Adicione um `README.md` com finalidade, configuração, execução e testes.
 3. Defina as dependências dentro dessa pasta; em Python, use seu próprio
    `pyproject.toml` e `.venv/`.

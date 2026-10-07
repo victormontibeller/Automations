@@ -32,7 +32,7 @@ class SharedAdapterTests(unittest.TestCase):
         read.assert_not_called()
 
     def test_app_adapters_delegate_to_shared_integrations(self):
-        root = Path(__file__).resolve().parents[1] / "src/resumos_cartoes"
+        root = Path(__file__).resolve().parents[1] / "src"
         for name in ("gmail", "drive"):
             tree = ast.parse((root / f"{name}.py").read_text())
             imports = [n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module]

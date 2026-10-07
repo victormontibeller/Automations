@@ -22,9 +22,10 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--resolve", choices=("sent", "not-sent"), help="Resolver resultado incerto após conferir o Gmail")
     parser.add_argument("--test-to", help="Com --send, redirecionar todos os resumos a um endereço de teste")
     parser.add_argument("--scheduled", action="store_true", help="Validar dia previsto. Black dia 5 = mês anterior; Latam dia 20 = mês atual")
+    parser.add_argument("--log-json", action="store_true", help="Emitir eventos operacionais JSON Lines em stderr")
     args = parser.parse_args(argv)
     return service.run(
         args.config, card=args.card, requested_month=args.month,
         recipient=args.recipient, send=args.send, history=args.history,
-        resolve=args.resolve, test_to=args.test_to, scheduled=args.scheduled,
+        resolve=args.resolve, test_to=args.test_to, scheduled=args.scheduled, log_json=args.log_json,
     )

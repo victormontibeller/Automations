@@ -21,6 +21,8 @@ An independent consumer can install `./libs/automation_core` alone; the library
 has no dependency on `resumos-cartoes`, `openpyxl` or Hermes. Do not share application
 virtualenvs or inject sibling source directories into `sys.path`. Reinstall regular
 installs after editing source. Development installation is not production deployment.
+For the shared pinned snapshot and isolated wheel/editable gates, use the
+[operations guide](../../docs/operations.md); rollout remains paused.
 
 ## API and ownership
 
@@ -43,7 +45,8 @@ installs after editing source. Development installation is not production deploy
 - Successful sends return immutable `gmail.SendResult(message_id, thread_id=None)`.
   These are **provider identifiers**, not the message's RFC `Message-ID`, delivery
   receipts or evidence of reading. An absent/invalid provider message ID is an
-  uncertain outcome, never success.
+  uncertain outcome, never success. An absent, empty or non-string optional
+  `threadId` becomes `None` without invalidating an acknowledged message.
 - HTTP 4xx send failures raise `GmailSendRejected`; transport errors, 5xx failures
   and missing acknowledgements raise `GmailSendUncertain`. API execution uses
   `num_retries=0`: the library never loops, reconnects or resends. Consumers must

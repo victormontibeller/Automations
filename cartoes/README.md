@@ -1,5 +1,10 @@
 # Resumos individuais dos cartões
 
+> **Refactor rollout is paused pending review.** Use the independent development
+> worktree and [safe verification guide](../docs/operations.md). The production
+> installation, private config/ledger and schedules are untouched; the historical
+> deployment instructions below do not authorize deployment or resuming jobs.
+
 Esta automação fica em `cartoes/`. Execute os comandos deste guia
 dentro dessa pasta. Consulte o [catálogo do repositório](../README.md) para
 ver a organização das demais automações.
@@ -418,5 +423,8 @@ Run both suites after installing both packages:
 The shared suite uses fake services and non-card release-notice/SVG examples.
 CI includes `libs/**` changes and runs both suites. Golden outputs, financial
 calculations, schedules, launcher arguments, configuration/history paths and the
-SQLite schema are unchanged. Structured logging/run results and broader quality
-gates belong to stage 3, not this extraction.
+SQLite schema are unchanged. Stage 3 adds the structured `service.run_result()`
+API, opt-in `--log-json` events, a pinned installation snapshot and isolated
+wheel/editable verification gates. See the English [operations guide](../docs/operations.md)
+for nullable count semantics and privacy boundaries, and [architecture](../docs/architecture.md)
+for dependency ownership and the paused rollout.

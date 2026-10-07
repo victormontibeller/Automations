@@ -1,5 +1,22 @@
 # Automations
 
+## Development quality and rollout status
+
+The three-stage refactor remains under review; **production rollout is paused**.
+Development worktrees and their virtualenvs are independent of the production
+checkout and any production editable installation. Do not merge, repoint installs,
+copy launchers or resume schedules as part of development verification.
+
+- [Architecture and a fake-client extension example](docs/architecture.md)
+- [Run results, privacy-safe JSON logging and reproducible verification](docs/operations.md)
+- Pinned runtime/build snapshot: `requirements/verification.txt`
+- Safe wheel + editable gates: `python tools/verify.py --python /path/to/dev/python --scratch /path/to/scratch --mode both`
+
+The verification driver uses public synthetic fixtures, separate disposable
+environments and network-disabled test suites; it never reads runtime config or
+private workbooks. Historical operational instructions below are not deployment
+approval.
+
 Repositório de automações pessoais. Cada automação fica em uma pasta própria
 na raiz do repositório, com código, dependências, configuração, testes e dados
 de execução independentes.

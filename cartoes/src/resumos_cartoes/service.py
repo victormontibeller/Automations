@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import hashlib
 from io import BytesIO
 from pathlib import Path
 import sys
+from time import monotonic
+from uuid import uuid4
 
 from . import alerts, config, delivery, drive, ledger, previews, scheduling, workbook
 from .config import Settings
 from .errors import ReportError
+from .operations import Mode, RunResult, Status, emit_json, safe_card, safe_month
 
 
 def input_workbook_bytes(settings: Settings, month: str) -> bytes:
@@ -25,24 +29,56 @@ def input_workbook_bytes(settings: Settings, month: str) -> bytes:
 def run(config_path: Path, *, card: str | None = None,
         requested_month: str | None = None, recipient: str | None = None,
         send: bool = False, history: bool = False, resolve: str | None = None,
-        test_to: str | None = None, scheduled: bool = False) -> int:
+        test_to: str | None = None, scheduled: bool = False, log_json: bool = False) -> int:
+    """Compatibility entry point; exactly one orchestration, integer exit code."""
+    return run_result(config_path, card=card, requested_month=requested_month,
+                      recipient=recipient, send=send, history=history, resolve=resolve,
+                      test_to=test_to, scheduled=scheduled, log_json=log_json).exit_code
+
+
+def run_result(config_path: Path, *, card: str | None = None,
+               requested_month: str | None = None, recipient: str | None = None,
+               send: bool = False, history: bool = False, resolve: str | None = None,
+               test_to: str | None = None, scheduled: bool = False, log_json: bool = False) -> RunResult:
     """Run one request; previews/history never connect to Gmail.
 
     Stage names and exit codes are part of the existing operational contract.
     Input bytes are snapshotted once for both parsing and the delivery hash.
     """
+    started = monotonic()
+    run_id = str(uuid4())
+    mode: Mode = ("resolve" if resolve else "history" if history else
+                  "test" if send and test_to else "send" if send else "preview")
+    sent = skipped = no_movement = preview_count = None
+    alert_status = "not_requested"
     settings = None
     month = None
     stage = "configuração"
+
+    if log_json:
+        emit_json(sys.stderr, "run_started", run_id=run_id, mode=mode,
+                  card=safe_card(card), month=safe_month(requested_month))
+
+    def finish(status: Status, error_category: str | None = None) -> RunResult:
+        result = RunResult(run_id, status, mode, safe_card(card),
+                         safe_month(month) or safe_month(requested_month),
+                         sent, skipped, no_movement, preview_count,
+                         monotonic() - started, error_category, alert_status)
+        if log_json:
+            emit_json(sys.stderr, "run_finished", **asdict(result))
+        return result
+
     try:
         settings = config.load_settings(config_path)
         if requested_month:
             month = scheduling.validate_month(requested_month)
+        if card is not None and safe_card(card) is None:
+            raise ReportError("Informe --card black ou --card latam.")
         if history or resolve:
             if scheduled or test_to:
                 raise ReportError("Histórico não aceita --scheduled ou --test-to.")
             ledger.maintain_ledger(settings, requested_month, card, recipient, resolve)
-            return 0
+            return finish("succeeded")
         if not card:
             raise ReportError("Informe --card black ou --card latam.")
         if scheduled:
@@ -67,15 +103,17 @@ def run(config_path: Path, *, card: str | None = None,
             if not reports:
                 raise ReportError("Aba pessoal não cadastrada ou desativada.")
         active = [r for r in reports if r.has_movement]
+        no_movement = len(reports) - len(active)
         if send:
             stage = "envio dos resumos"
-            count, skipped = delivery.send_reports(active, settings, hashlib.sha256(source_bytes).hexdigest(), test_to=test_to)
-            print(f"{card.upper()} {month}: {count} mensagens {'de teste ' if test_to else ''}aceitas pela API do Gmail; {skipped} já enviadas; {len(reports) - len(active)} sem movimento.")
+            sent, skipped = delivery.send_reports(active, settings, hashlib.sha256(source_bytes).hexdigest(), test_to=test_to)
+            print(f"{card.upper()} {month}: {sent} mensagens {'de teste ' if test_to else ''}aceitas pela API do Gmail; {skipped} já enviadas; {len(reports) - len(active)} sem movimento.")
         else:
             folder = settings.output_dir / month / card
             previews.write_previews(active, folder)
+            preview_count = len(active)
             print(f"Prévia {card.upper()} {month}: {len(active)} resumos em {folder}; {len(reports) - len(active)} sem movimento. Nenhum e-mail enviado.")
-        return 0
+        return finish("succeeded")
     except Exception as exc:
         # Only our controlled diagnostics may include details. Raw exceptions
         # can contain cell values, Gmail addresses or credential server output.
@@ -85,8 +123,10 @@ def run(config_path: Path, *, card: str | None = None,
             try:
                 alerts.notify_owner(settings, card, month, stage, reason)
             except Exception as alert_error:
+                alert_status = "failed"
                 # Never retry recursively, notify friends or mask the failure.
                 print(f"Não foi possível confirmar o aviso ao proprietário ({type(alert_error).__name__}). Confira o Gmail e os logs do Hermes.", file=sys.stderr)
             else:
+                alert_status = "accepted"
                 print("Aviso de falha aceito pelo Gmail para o proprietário (Cc pessoal, se configurado).", file=sys.stderr)
-        return 1
+        return finish("failed", "report_error" if isinstance(exc, ReportError) else "operational_error")

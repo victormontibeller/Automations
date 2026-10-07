@@ -21,6 +21,7 @@ from zipfile import ZipFile
 
 import openpyxl
 
+from automation_core import google_auth, gmail as core_gmail, drive as core_drive
 import cartoes as legacy_cli
 from resumos_cartoes import (
     cli, config as configuration, delivery as deliveries, drive, errors,
@@ -256,10 +257,10 @@ class ReportTests(unittest.TestCase):
             {"files": [{"id": "year-folder", "name": "2026", "mimeType": "application/vnd.google-apps.folder"}]},
             {"files": [{"id": "month-file", "name": "2026-09.xlsx", "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}]},
         ]
-        with patch.object(drive, "_build_drive_service", return_value=service), patch.object(drive, "_download_drive_file", return_value=b"xlsx-bytes") as download:
+        with patch.object(google_auth, "build_service", return_value=service), patch.object(core_drive.DriveClient, "download_bytes", return_value=b"xlsx-bytes") as download:
             content = drive.drive_workbook_bytes(settings, "2026-09")
         self.assertEqual(content, b"xlsx-bytes")
-        download.assert_called_once_with(service, "month-file")
+        download.assert_called_once_with("month-file")
         queries = [call.kwargs["q"] for call in service.files.return_value.list.call_args_list]
         self.assertIn("'my-drive-root' in parents", queries[0])
         self.assertIn("name = 'Cartão'", queries[0])
@@ -285,7 +286,7 @@ class ReportTests(unittest.TestCase):
 
         service = MagicMock()
         with patch("googleapiclient.http.MediaIoBaseDownload", FakeDownloader):
-            content = drive._download_drive_file(service, "excel-id")
+            content = core_drive.DriveClient(service).download_bytes("excel-id")
         self.assertEqual(content, b"xlsx-bytes")
         self.assertEqual(retry_counts, [0])
         service.files.return_value.get_media.assert_called_once_with(fileId="excel-id")
@@ -302,7 +303,7 @@ class ReportTests(unittest.TestCase):
             {"files": [{"id": "year-folder", "name": "2026", "mimeType": "application/vnd.google-apps.folder"}]},
             {"files": []},
         ]
-        with patch.object(drive, "_build_drive_service", return_value=service):
+        with patch.object(google_auth, "build_service", return_value=service):
             with self.assertRaisesRegex(errors.ReportError, "2026-09.xlsx"):
                 drive.drive_workbook_bytes(settings, "2026-09")
 
@@ -423,9 +424,9 @@ class ReportTests(unittest.TestCase):
         service.users.return_value.getProfile.return_value.execute.return_value = {
             "emailAddress": "owner@gmail.com"
         }
-        with patch.object(gmail_api, "_build_gmail_service", return_value=service) as build_service:
+        with patch.object(google_auth, "build_service", return_value=service) as build_service:
             connection = gmail_api.gmail_connect(token_file)
-        build_service.assert_called_once_with(token_file)
+        build_service.assert_called_once_with("gmail", "v1", token_file)
         self.assertEqual(connection.email_address, "owner@gmail.com")
 
     def test_gmail_api_client_uses_authenticated_profile_and_sends_raw_mime(self):
@@ -436,13 +437,13 @@ class ReportTests(unittest.TestCase):
         service.users.return_value.messages.return_value.send.return_value.execute.return_value = {
             "id": "gmail-internal-id"
         }
-        client = gmail_api.GmailAPIConnection(service)
+        client = core_gmail.GmailClient(service)
         self.assertEqual(client.email_address, "owner@gmail.com")
 
         message = deliveries.make_message(self.reports()[0], client.email_address, self.settings.sender_name, "pessoa01@example.com", cc=self.settings.personal_copy_email)
         result = client.send_message(message)
 
-        self.assertEqual(result["id"], "gmail-internal-id")
+        self.assertEqual(result.message_id, "gmail-internal-id")
         service.users.return_value.messages.return_value.send.assert_called_once()
         args, kwargs = service.users.return_value.messages.return_value.send.call_args
         self.assertEqual(kwargs["userId"], "me")
@@ -458,8 +459,9 @@ class ReportTests(unittest.TestCase):
     def test_gmail_connection_closes_transport_when_profile_lookup_fails(self):
         service = MagicMock()
         service.users.return_value.getProfile.return_value.execute.side_effect = RuntimeError("offline")
-        with self.assertRaisesRegex(RuntimeError, "offline"):
-            gmail_api.GmailAPIConnection(service)
+        with self.assertRaises(core_gmail.GmailProfileError) as raised:
+            core_gmail.GmailClient(service)
+        self.assertNotIn("offline", str(raised.exception))
         service._http.close.assert_called_once()
 
     def test_gmail_api_connection_marks_http_4xx_as_definitive_rejection(self):
@@ -470,7 +472,7 @@ class ReportTests(unittest.TestCase):
         error = RuntimeError("private API response")
         error.resp = type("Response", (), {"status": 403})()
         service.users.return_value.messages.return_value.send.return_value.execute.side_effect = error
-        connection = gmail_api.GmailAPIConnection(service)
+        connection = core_gmail.GmailClient(service)
         with self.assertRaises(gmail_api.GmailSendRejected):
             connection.send_message(deliveries.make_message(self.reports()[0], "owner@gmail.com", "Cartões", "pessoa01@example.com"))
 
@@ -609,7 +611,7 @@ class ReportTests(unittest.TestCase):
         self.assertIn("Não foi possível confirmar o aviso", stderr.getvalue())
 
     def test_missing_oauth_token_reports_setup_requirement(self):
-        with patch.object(gmail_api, "_build_gmail_service", side_effect=FileNotFoundError):
+        with patch.object(google_auth, "build_service", side_effect=FileNotFoundError):
             with self.assertRaisesRegex(errors.ReportError, "token OAuth"):
                 gmail_api.gmail_connect(self.settings.google_token_file)
 

@@ -29,7 +29,7 @@ Python exclusivo desta automação:
 ```bash
 cd ~/Projetos/Automations/cartoes
 python3 -m venv .venv
-.venv/bin/python -m pip install .
+.venv/bin/python -m pip install ../libs/automation_core .
 cp config.example.json config.json
 ```
 
@@ -316,7 +316,7 @@ do GitHub. Também é possível iniciar o workflow manualmente.
 Depois de alterar o script no servidor, reinstale no ambiente usado pelo Hermes:
 
 ```bash
-.venv/bin/python -m pip install --upgrade .
+.venv/bin/python -m pip install --upgrade ../libs/automation_core .
 ```
 
 ### Instalações anteriores à reorganização
@@ -340,7 +340,7 @@ Se esta automação já estava instalada na raiz do repositório ou em
 
 A reorganização local não altera uma instalação já existente no servidor.
 
-### Package development (stage 1)
+### Package development and shared integrations (stages 1–2)
 
 The implementation lives in `src/resumos_cartoes/`. Install the project before
 running it; no entry point changes `sys.path` or relies on the current directory
@@ -349,7 +349,7 @@ compatibility module exports `main` for the existing Hermes launchers.
 
 ```bash
 # From cartoes/, using this checkout's independent virtual environment:
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install ../libs/automation_core .
 .venv/bin/python -m pip check
 .venv/bin/python -m unittest discover -s tests -v
 
@@ -359,8 +359,12 @@ compatibility module exports `main` for the existing Hermes launchers.
 .venv/bin/python -m resumos_cartoes --help
 ```
 
-Use `pip install .` instead of `pip install -e .` to test a regular wheel install.
-After source edits, reinstall a regular install before testing. Installed console
+Both packages above use regular wheel installations. `automation-core==0.1.0`
+is a declared dependency, but is not published on PyPI: pass **both local paths**
+to pip, including when reinstalling. For isolated editable development only, use
+`pip install -e ../libs/automation_core -e .`; never point a production environment
+at the development worktree. Keep this automation's own virtualenv.
+After source edits, reinstall both regular installs before testing. Installed console
 and module commands also work outside the checkout. Pass an absolute `--config`
 path there; the default remains `config.json` in the current working directory.
 Configuration-relative input, output, state and token paths are unchanged.
@@ -373,7 +377,7 @@ Responsibilities are intentionally local to this automation:
 | `config` | JSON validation, defaults and Hermes credential-path resolution |
 | `workbook`, `scheduling` | Excel validation/recalculation and card business dates |
 | `rendering`, `previews` | HTML/text generation and local preview files |
-| `gmail`, `drive` | Local Google adapters, including lazy OAuth client construction |
+| `gmail`, `drive` | Application adapters: sender validation, workbook path/MIME rules and controlled diagnostics |
 | `delivery`, `alerts` | Individual MIME envelopes, batch delivery and owner alerts |
 | `ledger`, `locking` | Existing SQLite schema, reconciliation and process exclusion |
 | `service`, `cli` | Application orchestration/error policy and argument parsing |
@@ -388,6 +392,31 @@ golden changes require review, not automatic regeneration. The original
 regression suite remains in `test_cartoes.py`; MIME envelope contracts have a
 focused test file as well.
 
-This stage does not introduce a shared library, change delivery logs/results,
-migrate configuration/history, or change the Hermes launcher arguments/defaults.
-Google integrations remain inside `cartoes/` for a separate stage 2 review.
+The reusable integrations now live in `../libs/automation_core/src/automation_core`:
+
+- `google_auth.build_service(api, version, token_file)` reads only the explicit
+  token path. Hermes fallback paths remain in cards configuration/owner alerts.
+- `GmailClient` transports the caller's `EmailMessage` without selecting recipients.
+  Cards still owns required personal Cc, case-insensitive To/Cc deduplication and
+  no Bcc. `SendResult.message_id` is the provider ID, not the RFC `Message-ID`.
+- `DriveClient` handles root lookup, exact-parent/name pagination and byte download.
+  Cards still owns `Cartão/<year>/<month>.xlsx`, Excel MIME validation and no fallback.
+
+The shared library never imports this application. Errors are translated at the
+application boundary; provider payloads are not printed. Gmail 4xx rejections stay
+`failed`; network/5xx failures and missing acknowledgements stay `unknown`. No send
+is automatically retried. Best-effort transport cleanup cannot invalidate an
+accepted send or prevent the application from closing its ledger.
+
+Run both suites after installing both packages:
+
+```bash
+.venv/bin/python -m unittest discover -s ../libs/automation_core/tests -v
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+The shared suite uses fake services and non-card release-notice/SVG examples.
+CI includes `libs/**` changes and runs both suites. Golden outputs, financial
+calculations, schedules, launcher arguments, configuration/history paths and the
+SQLite schema are unchanged. Structured logging/run results and broader quality
+gates belong to stage 3, not this extraction.

@@ -23,10 +23,10 @@ def greeting_paragraphs(report: Report) -> tuple[str, str, str, str]:
     owner = report.owner_name or "[seu nome]"
     year, month = report.month.split("-")
     return (
-        f"Olá, {report.recipient.sheet}! Tudo bem?",
-        f"Sou o Hermes, assistente pessoal do {owner}. Vou ajudar no envio dos resumos mensais dos cartões compartilhados.",
-        f"Segue abaixo o seu resumo, referente a {month}/{year}, com os gastos, pagamentos registrados e saldo atualizado.",
-        f"Se tiver alguma dúvida sobre os lançamentos, fale diretamente com {owner}.",
+        f"Olá, {report.recipient.sheet}!",
+        f"Segue o seu resumo do cartão {report.card.upper()}, referente a {month}/{year}, com os lançamentos, pagamentos registrados e saldo.",
+        f"Se tiver alguma dúvida ou identificar alguma diferença, fale com o {owner}.",
+        "Abraço,\nHermes",
     )
 
 
@@ -82,7 +82,7 @@ def render_html(report: Report) -> str:
 <thead><tr><th colspan="5" bgcolor="{BLUE}" style="background:{BLUE};color:#111111;text-align:center;padding:12px;font-size:24px;font-weight:bold;">{escape(title)}</th></tr><tr>{heads}</tr></thead>
 <tbody>{''.join(rows)}</tbody></table>
 {status_paragraph}
-<p style="font-size:16px;line-height:1.5;margin:14px 0 8px;">{escape(greeting[3])}</p>
+<p style="font-size:16px;line-height:1.5;margin:14px 0 8px;">{'<br>'.join(escape(line) for line in greeting[3].splitlines())}</p>
 {payment_footer}
 </td></tr></table></body></html>'''
 

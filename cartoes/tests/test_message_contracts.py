@@ -25,6 +25,33 @@ class MessageContractTests(unittest.TestCase):
                 self.assertEqual(parsed.get_body(preferencelist=("plain",)).get_content_type(), "text/plain")
                 self.assertEqual(parsed.get_body(preferencelist=("html",)).get_content_type(), "text/html")
 
+    def test_monthly_copy_and_signature_survive_mime_round_trip(self):
+        for card in ("black", "latam"):
+            with self.subTest(card=card):
+                report = Report(card, "2026-09", Recipient("Pessoa01", "Participante01", "person@example.com"),
+                                (), (), "Titular de teste", "Pagamento: referência de teste")
+                message = make_message(report, "owner@example.com", "Hermes", "person@example.com")
+                parsed = BytesParser(policy=policy.default).parsebytes(message.as_bytes())
+                introduction = (
+                    "Olá, Pessoa01!",
+                    f"Segue o seu resumo do cartão {card.upper()}, referente a 09/2026, "
+                    "com os lançamentos, pagamentos registrados e saldo.",
+                    "Se tiver alguma dúvida ou identificar alguma diferença, fale com o Titular de teste.",
+                )
+                for subtype in ("plain", "html"):
+                    content = parsed.get_body(preferencelist=(subtype,)).get_content()
+                    for paragraph in introduction:
+                        self.assertIn(paragraph, content)
+                    self.assertNotIn("Sou o Hermes", content)
+                    self.assertNotIn("assistente pessoal", content)
+                    self.assertNotIn("Tudo bem?", content)
+                    self.assertLess(content.index(introduction[0]), content.index(introduction[1]))
+                    self.assertLess(content.index(introduction[1]), content.index(introduction[2]))
+                    self.assertLess(content.index(introduction[2]), content.index("TOTAL GERAL"))
+                    self.assertLess(content.index("TOTAL GERAL"), content.index("Abraço,"))
+                    self.assertIn("Pagamento: referência de teste", content)
+                    self.assertIn("Abraço,\nHermes" if subtype == "plain" else "Abraço,<br>Hermes", content)
+
     def test_owner_alert_deduplicates_copy_against_authenticated_owner(self):
         settings = Settings(Path("input"), "local", "Cartão", Path("output"), Path("state"),
                             Path("fake-token.json"), "Hermes", (), personal_copy_email="OWNER@example.com")

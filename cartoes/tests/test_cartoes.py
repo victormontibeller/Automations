@@ -218,10 +218,11 @@ class ReportTests(unittest.TestCase):
         plain = plain_part.get_content()
         html = html_part.get_content()
         for content in (plain, html):
-            self.assertIn("Olá, Pessoa01! Tudo bem?", content)
-            self.assertIn("Sou o Hermes, assistente pessoal do Titular de teste.", content)
-            self.assertIn("Segue abaixo o seu resumo, referente a 09/2026", content)
-            self.assertIn("fale diretamente com Titular de teste.", content)
+            self.assertIn("Olá, Pessoa01!", content)
+            self.assertNotIn("Sou o Hermes", content)
+            self.assertIn("Segue o seu resumo do cartão BLACK, referente a 09/2026", content)
+            self.assertIn("fale com o Titular de teste.", content)
+            self.assertIn("Abraço,", content)
             self.assertIn("Pix: (00) 00000-0000", content)
             self.assertNotIn("O valor individual está na coluna Rateio.", content)
             self.assertNotIn("Saldo restante a pagar.", content)
@@ -230,7 +231,7 @@ class ReportTests(unittest.TestCase):
     def test_missing_owner_name_allows_preview_but_blocks_send(self):
         from dataclasses import replace
         report = replace(self.reports()[0], owner_name=None)
-        self.assertIn("assistente pessoal do [seu nome]", rendering.render_html(report))
+        self.assertIn("fale com o [seu nome]", rendering.render_html(report))
         with self.assertRaisesRegex(errors.ReportError, "owner_name"):
             deliveries.send_reports([report], self.settings, "hash", connector=lambda *_: self.fail("must not connect"))
         self.assertFalse(self.settings.state_dir.exists())

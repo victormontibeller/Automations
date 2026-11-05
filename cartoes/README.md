@@ -46,9 +46,11 @@ Edite `config.json`:
   usa `$HERMES_HOME/google_token.json` ou `~/.hermes/google_token.json`.
 - `sender_name`: nome exibido como remetente; o padrão neutro é `Hermes`. Defina
   o nome desejado apenas no `config.json` privado.
-- `owner_name`: seu nome, usado na apresentação “Sou o Hermes, assistente pessoal
-  do…”. Preencha esse campo antes de enviar. Enquanto estiver `null`, as prévias
-  mostram `[seu nome]` e o envio é bloqueado.
+- `owner_name`: your name, used to direct questions or discrepancies to you.
+  Monthly messages open with “Olá, {name}!”, identify the card and reference month,
+  and close with “Abraço, Hermes”, without repeating the assistant introduction.
+  Fill this field before sending; when it is `null`, previews show `[seu nome]`
+  and sending remains blocked.
 - `payment_footer` (opcional): texto de uma linha anexado ao fim dos corpos HTML e
   texto. Cadastre dados de pagamento somente no `config.json` privado; no exemplo
   versionado, este campo fica `null`.

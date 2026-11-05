@@ -82,8 +82,8 @@ def render_html(report: Report) -> str:
 <thead><tr><th colspan="5" bgcolor="{BLUE}" style="background:{BLUE};color:#111111;text-align:center;padding:12px;font-size:24px;font-weight:bold;">{escape(title)}</th></tr><tr>{heads}</tr></thead>
 <tbody>{''.join(rows)}</tbody></table>
 {status_paragraph}
-<p style="font-size:16px;line-height:1.5;margin:14px 0 8px;">{'<br>'.join(escape(line) for line in greeting[3].splitlines())}</p>
 {payment_footer}
+<p style="font-size:16px;line-height:1.5;margin:14px 0 8px;">{'<br>'.join(escape(line) for line in greeting[3].splitlines())}</p>
 </td></tr></table></body></html>'''
 
 
@@ -94,7 +94,7 @@ def render_text(report: Report) -> str:
     lines += ["", "TOTAL: " + brl(report.spending)]
     lines += ["PAGAMENTOS: " + brl(p) for p in (report.payments or (ZERO,))]
     lines += ["TOTAL GERAL: " + brl(report.balance)]
-    lines += ["", greeting[3]]
     if report.payment_footer:
         lines += ["", report.payment_footer]
+    lines += ["", greeting[3]]
     return "\n".join(lines) + "\n"

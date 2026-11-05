@@ -51,9 +51,10 @@ Edite `config.json`:
   and close with “Abraço, Hermes”, without repeating the assistant introduction.
   Fill this field before sending; when it is `null`, previews show `[seu nome]`
   and sending remains blocked.
-- `payment_footer` (opcional): texto de uma linha anexado ao fim dos corpos HTML e
-  texto. Cadastre dados de pagamento somente no `config.json` privado; no exemplo
-  versionado, este campo fica `null`.
+- `payment_footer` (optional): a single payment-instructions line shown after the
+  financial summary and before the closing signature in both HTML and plain text.
+  Keep payment details only in the private `config.json`; the tracked example
+  leaves this field `null`.
 - `personal_copy_email`: endereço pessoal incluído em `Cc` em cada resumo; preencha
   antes de enviar. Os avisos também usam esse `Cc` quando o endereço está configurado.
 - `recipients`: associação entre `sheet` (aba pessoal), `participant` (cabeçalho

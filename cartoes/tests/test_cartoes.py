@@ -226,7 +226,7 @@ class ReportTests(unittest.TestCase):
             self.assertIn("Pix: (00) 00000-0000", content)
             self.assertNotIn("O valor individual está na coluna Rateio.", content)
             self.assertNotIn("Saldo restante a pagar.", content)
-        self.assertTrue(plain.rstrip().endswith("Pix: (00) 00000-0000"))
+        self.assertTrue(plain.rstrip().endswith("Abraço,\nHermes"))
 
     def test_missing_owner_name_allows_preview_but_blocks_send(self):
         from dataclasses import replace

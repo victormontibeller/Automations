@@ -50,7 +50,11 @@ class MessageContractTests(unittest.TestCase):
                     self.assertLess(content.index(introduction[2]), content.index("TOTAL GERAL"))
                     self.assertLess(content.index("TOTAL GERAL"), content.index("Abraço,"))
                     self.assertIn("Pagamento: referência de teste", content)
+                    self.assertLess(content.index("TOTAL GERAL"), content.index("Pagamento: referência de teste"))
+                    self.assertLess(content.index("Pagamento: referência de teste"), content.index("Abraço,"))
                     self.assertIn("Abraço,\nHermes" if subtype == "plain" else "Abraço,<br>Hermes", content)
+                    if subtype == "plain":
+                        self.assertTrue(content.rstrip().endswith("Abraço,\nHermes"))
 
     def test_owner_alert_deduplicates_copy_against_authenticated_owner(self):
         settings = Settings(Path("input"), "local", "Cartão", Path("output"), Path("state"),
